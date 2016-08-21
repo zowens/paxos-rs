@@ -1,5 +1,5 @@
 extern crate capnpc;
 
 fn main() {
-    ::capnpc::compile(".", &["messages.capnp"]).unwrap();
+    ::capnpc::compile("schema", &["schema/messages.capnp"]).unwrap();
 }

@@ -10,7 +10,7 @@ struct PaxosMessage {
     # a ballot.  The ballot b leader performs actions Phase1a(b) and
     # Phase2a(b).  The Phase1a(b) action sends a phase 1a struct (a struct
     # m with m.type = "1a") that begins ballot b.
-    struct PhaseOneA {
+    struct Prepare {
         ballot @0 :UInt64;
     }
 
@@ -18,13 +18,17 @@ struct PaxosMessage {
     # Phase1b(a) action only if b > maxBal[a].  The action sets maxBal[a] to
     # b and sends a phase 1b struct to the leader containing the values of
     # maxVBal[a] and maxVal[a].
-    struct PhaseOneB {
-        acceptor @0 :Acceptor;
-        maxVote  @1 :UInt64;
+    struct Promise {
+        struct LastAccepted {
+            ballot @0 :UInt64;
+            value  @1 :Data;
+        }
 
+        acceptor @0 :Acceptor;
+        ballot @1 :UInt64;
         union {
-            noValue  @2 :Void;
-            maxValue @3 :Data;
+            noneAccepted @2 :Void;
+            lastAccepted @3 :LastAccepted;
         }
     }
 
@@ -45,7 +49,7 @@ struct PaxosMessage {
     # The action sends a phase 2a struct that tells any acceptor a that it
     # can vote for v in ballot b, unless it has already set maxBal[a]
     # greater than b (thereby promising not to vote in ballot b).
-    struct PhaseTwoA {
+    struct Accept {
         ballot   @0 :UInt64;
         value    @1 :Data;
     }
@@ -57,7 +61,7 @@ struct PaxosMessage {
     # setting maxBVal[a] and maxVal[a] to record that vote and sending a
     # phase 2b struct announcing its vote.  It also sets maxBal[a] to the
     # struct's.  ballot number
-    struct PhaseTwoB {
+    struct Accepted {
         acceptor @0 :Acceptor;
         ballot   @1 :UInt64;
         value    @2 :Data;
@@ -65,9 +69,9 @@ struct PaxosMessage {
 
 
     union {
-        p1a @0 :PhaseOneA;
-        p1b @1 :PhaseOneB;
-        p2a @2 :PhaseTwoA;
-        p2b @3 :PhaseTwoB;
+        prepare  @0 :Prepare;
+        promise  @1 :Promise;
+        accept   @2 :Accept;
+        accepted @3 :Accepted;
     }
 }
