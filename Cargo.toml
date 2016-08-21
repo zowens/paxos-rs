@@ -1,5 +1,5 @@
 [package]
-name = "paxos-rs"
+name = "paxos"
 version = "0.1.0"
 authors = ["Zack Owens <zowens2009@gmail.com>"]
 build = "build.rs"
@@ -9,3 +9,7 @@ capnpc = "0.7.2"
 
 [dependencies]
 capnp = "0.7.2"
+
+[[bin]]
+name = "server"
+path = "src/bin/main.rs"

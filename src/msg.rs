@@ -1,11 +1,14 @@
-extern crate capnp;
+use std::io;
 
+use capnp;
 use capnp::message::{HeapAllocator, Builder as MessageBuilder};
 
-type Acceptor = String;
-type Value = Vec<u8>;
-type Ballot = u64;
-enum PaxosMessage {
+use super::messages_capnp;
+
+pub type Acceptor = String;
+pub type Value = Vec<u8>;
+pub type Ballot = u64;
+pub enum PaxosMessage {
     Prepare(Ballot),
     Promise(Acceptor, Ballot, Option<(Ballot, Value)>),
     Accept(Ballot, Value),
@@ -35,8 +38,8 @@ macro_rules! data {
 }
 
 impl PaxosMessage {
-    fn write_to<W>(self, w: &mut W) -> std::io::Result<()>
-        where W: std::io::Write
+    pub fn write_to<W>(self, w: &mut W) -> io::Result<()>
+        where W: io::Write
     {
         use ::messages_capnp::paxos_message::*;
 
@@ -97,17 +100,4 @@ impl PaxosMessage {
 
         capnp::serialize_packed::write_message(w, &outer_builder)
     }
-}
-
-
-#[allow(dead_code)]
-mod messages_capnp {
-    include!(concat!(env!("OUT_DIR"), "/messages_capnp.rs"));
-}
-
-fn main() {
-    let mut v = Vec::new();
-    let lv = "hello".bytes().collect::<Vec<_>>();
-    PaxosMessage::Accepted("foobarbaz".to_string(), 5, lv).write_to(&mut v).unwrap();
-    println!("{}", v.len());
 }
