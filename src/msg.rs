@@ -8,6 +8,8 @@ use super::messages_capnp;
 pub type Acceptor = String;
 pub type Value = Vec<u8>;
 pub type Ballot = u64;
+
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub enum PaxosMessage {
     Prepare(Ballot),
     Promise(Acceptor, Ballot, Option<(Ballot, Value)>),

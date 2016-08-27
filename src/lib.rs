@@ -1,6 +1,7 @@
 extern crate capnp;
 
 mod msg;
+mod machine;
 
 #[allow(dead_code)]
 mod messages_capnp {
@@ -9,3 +10,4 @@ mod messages_capnp {
 
 // re-export msg values
 pub use msg::*;
+pub use machine::*;
