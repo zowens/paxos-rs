@@ -2,32 +2,13 @@
 name = "paxos"
 version = "0.1.0"
 dependencies = [
- "capnp 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "capnpc 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "matches 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
-name = "byteorder"
-version = "0.4.2"
+name = "matches"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
-name = "capnp"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "capnpc"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-dependencies = [
- "capnp 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)",
-]
 
 [metadata]
-"checksum byteorder 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)" = "96c8b41881888cc08af32d47ac4edd52bc7fa27fef774be47a92443756451304"
-"checksum capnp 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)" = "360e1664b4e317b1da1b9a881f4c64ec1f15b02c9f785d15874306ffe954a7d7"
-"checksum capnpc 0.7.2 (registry+https://github.com/rust-lang/crates.io-index)" = "8088d62962beb3d04a389245654fdbe49940e0a5e30b35a8c22e4e03911e62b6"
+"checksum matches 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "15305656809ce5a4805b1ff2946892810992197ce1270ff79baded852187942e"
