@@ -1,20 +1,28 @@
-use super::{Messenger, Ballot, Slot, CommandSet, PaxosMessage};
+use super::{Ballot, Slot, CommandSet};
 use core::cmp::max;
 
-pub struct Acceptor<M, C: Clone> {
-    messenger: M,
+pub struct Acceptor<C: Clone> {
     ballot: Option<Ballot>,
     accepted: CommandSet<C>,
 }
 
-impl<M, C> Acceptor<M, C>
-    where M: Messenger<C>,
-          C: Clone
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum PromiseResult {
+    Promised(Ballot),
+    Preempted(Ballot),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum AcceptResult {
+    Accepted(Ballot, Slot)
+}
+
+impl<C> Acceptor<C>
+    where C: Clone
 {
     // TODO: persisted values from disk
-    pub fn new(messenger: M) -> Acceptor<M, C> {
+    pub fn new() -> Acceptor<C> {
         Acceptor {
-            messenger: messenger,
             ballot: None,
             accepted: CommandSet::new(),
         }
@@ -28,7 +36,7 @@ impl<M, C> Acceptor<M, C>
         self.accepted.get(s)
     }
 
-    pub fn prepare(&mut self, b: Ballot) -> M::Response {
+    pub fn prepare(&mut self, b: Ballot) -> PromiseResult {
         // ballot must be > current ballot OR no ballot has been promised
         let can_promise = self.ballot.as_ref().map(|cb| cb.lt(&b)).unwrap_or(true);
 
@@ -37,44 +45,27 @@ impl<M, C> Acceptor<M, C>
         // promised a ballot greater than ballot b
         if can_promise {
             self.ballot = Some(b.clone());
-            self.messenger.send(b.1.clone(), PaxosMessage::Promise(b, self.accepted.clone()))
+            PromiseResult::Promised(b)
         } else {
-            self.messenger.send(b.1.clone(),
-                                PaxosMessage::PromiseNack(self.ballot.as_ref().unwrap().clone()))
+            PromiseResult::Preempted(self.ballot.clone().unwrap())
         }
     }
 
-    pub fn accept(&mut self, b: Ballot, s: Slot, c: C) -> M::Response {
+    pub fn accept(&mut self, b: Ballot, s: Slot, c: C) -> AcceptResult {
         // update the acceptor's ballot if necessary
-        self.ballot = max(Some(b.clone()), self.ballot.clone());
+        let new_ballot = max(Some(b.clone()), self.ballot.clone()).unwrap();
+        self.ballot = Some(new_ballot.clone());
 
         // accept is an imperative
         self.accepted.add(s.clone(), b.clone(), c);
-
-        self.messenger.send(b.1.clone(),
-                            PaxosMessage::Accepted(self.ballot.clone().unwrap_or(b), s))
+        AcceptResult::Accepted(new_ballot, s)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::{Messenger, Ballot, Node, Slot, PaxosMessage};
-    use self::MessengerResponse::Sent;
-
-    enum MessengerResponse {
-        Sent(Node, PaxosMessage<u8>),
-    }
-
-    struct NoopMessenger {
-    }
-
-    impl Messenger<u8> for NoopMessenger {
-        type Response = MessengerResponse;
-        fn send(&self, n: Node, m: PaxosMessage<u8>) -> MessengerResponse {
-            MessengerResponse::Sent(n, m)
-        }
-    }
+    use super::super::{Ballot, Node};
 
     macro_rules! node {
         ($e:expr ) => (
@@ -90,79 +81,71 @@ mod tests {
 
     #[test]
     fn test_prepare() {
-        let mut acceptor = Acceptor::new(NoopMessenger {});
-        let nd = node!("abc");
-
+        let mut acceptor = Acceptor::<u8>::new();
         assert_eq!(None, acceptor.last_promised());
 
         // prepare with ballot 10
         {
             let response = acceptor.prepare(ballot!(10, "abc"));
-            assert!(matches!(response,
-                Sent(ref n,
-                    PaxosMessage::Promise(Ballot(10, ref mn), _)) if n.eq(&nd) && mn.eq(&nd)));
-
+            assert_eq!(PromiseResult::Promised(ballot!(10, "abc")), response);
             assert_eq!(ballot!(10, "abc"), acceptor.last_promised().unwrap());
         }
 
         // prepare with ballot 11
         {
             let response = acceptor.prepare(ballot!(11, "abc"));
-            assert!(matches!(response,
-                Sent(ref n,
-                    PaxosMessage::Promise(Ballot(11, ref mn), _)) if n.eq(&nd) && mn.eq(&nd)));
+            assert_eq!(PromiseResult::Promised(ballot!(11, "abc")), response);
             assert_eq!(ballot!(11, "abc"), acceptor.last_promised().unwrap());
         }
 
         // prepare with ballot 5 should yield NACK
         {
             let response = acceptor.prepare(ballot!(5, "abc"));
-            assert!(matches!(response,
-                Sent(ref n,
-                    PaxosMessage::PromiseNack(Ballot(11, ref mn))) if n.eq(&nd) && mn.eq(&nd)));
+            assert_eq!(PromiseResult::Preempted(ballot!(11, "abc")), response);
             assert_eq!(ballot!(11, "abc"), acceptor.last_promised().unwrap());
         }
     }
 
     #[test]
     fn test_accept() {
-        let mut acceptor = Acceptor::new(NoopMessenger {});
-        let nd = node!("");
+        let mut acceptor = Acceptor::new();
 
         // acceptor is told to accept a value
         {
-            let acceptance = acceptor.accept(ballot!(5, ""), 2.into(), 7);
-            assert!(matches!(acceptance,
-                Sent(ref n,
-                    PaxosMessage::Accepted(Ballot(5, ref bn), Slot(2))) if n.eq(&nd) && bn.eq(&nd)));
+            let response = acceptor.accept(ballot!(5, ""), 2.into(), 7);
+            assert_eq!(AcceptResult::Accepted(ballot!(5, ""), 2.into()), response);
             assert_eq!(ballot!(5, ""), acceptor.last_promised().unwrap());
             assert_eq!((ballot!(5, ""), &7u8), acceptor.accepted_in_slot(2.into()).unwrap());
         }
 
         // acceptor is told to accept an older value
         {
-            acceptor.accept(ballot!(1, ""), 1.into(), 4);
+            let response = acceptor.accept(ballot!(1, ""), 1.into(), 4);
+            assert_eq!(AcceptResult::Accepted(ballot!(5, ""), 1.into()), response);
             assert_eq!(ballot!(5, ""), acceptor.last_promised().unwrap());
             assert_eq!((ballot!(1, ""), &4u8), acceptor.accepted_in_slot(1.into()).unwrap());
         }
 
         // acceptor is told to accept a newer value for slot
         {
-            acceptor.accept(ballot!(2, ""), 1.into(), 5);
+            let response = acceptor.accept(ballot!(2, ""), 1.into(), 5);
+            assert_eq!(AcceptResult::Accepted(ballot!(5, ""), 1.into()), response);
             assert_eq!(ballot!(5, ""), acceptor.last_promised().unwrap());
             assert_eq!((ballot!(2, ""), &5u8), acceptor.accepted_in_slot(1.into()).unwrap());
         }
 
         // acceptor ignores slot update for old value for slot
         {
-            acceptor.accept(ballot!(1, ""), 1.into(), 4);
+            let response = acceptor.accept(ballot!(1, ""), 1.into(), 4);
+            assert_eq!(AcceptResult::Accepted(ballot!(5, ""), 1.into()), response);
             assert_eq!(ballot!(5, ""), acceptor.last_promised().unwrap());
             assert_eq!((ballot!(2, ""), &5u8), acceptor.accepted_in_slot(1.into()).unwrap());
         }
 
         // acceptor updates last promised
         {
-            acceptor.accept(ballot!(10, ""), 7.into(), 3);
+            let response = acceptor.accept(ballot!(10, ""), 7.into(), 3);
+            assert_eq!(AcceptResult::Accepted(ballot!(10, ""), 7.into()), response);
             assert_eq!(ballot!(10, ""), acceptor.last_promised().unwrap());
         }
     }
