@@ -3,5 +3,5 @@ name = "paxos"
 version = "0.1.0"
 authors = ["Zack Owens <zowens2009@gmail.com>"]
 
-[dependencies]
-matches = "0.1"
+[dev-dependencies]
+assert_matches = "1.1.0"

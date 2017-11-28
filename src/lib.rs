@@ -1,16 +1,31 @@
-#![allow(dead_code)]
-extern crate core;
+#![feature(conservative_impl_trait, option_filter)]
+#[cfg(test)]
 #[macro_use]
-extern crate matches;
+extern crate assert_matches;
 
-mod acceptor;
+mod messenger;
+mod instance;
 
-use std::collections::{HashSet, HashMap};
-use std::collections::hash_map::Entry;
-use core::cmp::Ordering;
+use std::cmp::Ordering;
+use std::collections::HashSet;
 
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Ballot(u64, Node);
+/// Ballot numbering is an increasing number in order to order proposals
+/// across multiple nodes. Ballots are unique in that ballot numbers between
+/// nodes are unique and it is algorithmically increasing per node.
+#[derive(PartialEq, Hash, Eq, Clone, Copy, Debug)]
+pub struct Ballot(u64, NodeId);
+
+impl Ballot {
+    /// Generates a ballot that is greater than `self` for a given node.
+    pub fn higher_for(&self, n: NodeId) -> Ballot {
+        // slight optimization to not increase ballot numeral unnecessarily
+        if self.1 < n {
+            Ballot(self.0, n)
+        } else {
+            Ballot(self.0 + 1, n)
+        }
+    }
+}
 
 impl PartialOrd for Ballot {
     fn partial_cmp(&self, other: &Ballot) -> Option<Ordering> {
@@ -30,73 +45,75 @@ impl Ord for Ballot {
     }
 }
 
-#[derive(PartialEq, PartialOrd, Ord, Eq, Hash, Copy, Clone, Debug)]
-pub struct Slot(u64);
+/// An instance is a "round" of Paxos. Instances are chained to
+/// form a sequence of values.
+pub type Instance = u64;
 
-impl From<u64> for Slot {
-    fn from(s: u64) -> Slot {
-        Slot(s)
-    }
+/// A `NodeId` is a unique value that identifies a node
+/// within the configuration.
+pub type NodeId = u64;
+
+// TODO: parameterize Value within PaxosInstance
+pub type Value = Vec<u8>;
+
+/// `QuorumSet` tracks nodes that have sent certain messages and will
+/// detect when quorum is reached. Duplicates are treated as a single
+/// message to determine quorum.
+#[derive(Clone, Debug)]
+struct QuorumSet {
+    quorum_size: usize,
+    values: HashSet<NodeId>,
 }
 
-#[derive(PartialEq, PartialOrd, Ord, Eq, Hash, Clone, Debug)]
-pub struct Node(String);
-
-#[derive(Clone)]
-pub struct CommandSet<C: Clone> {
-    s: HashMap<Slot, (Ballot, C)>,
-}
-
-impl<C> CommandSet<C>
-    where C: Clone
-{
-    pub fn new() -> CommandSet<C> {
-        CommandSet { s: HashMap::new() }
-    }
-
-    pub fn get(&self, s: Slot) -> Option<(Ballot, &C)> {
-        self.s.get(&s).as_ref().map(|t| (t.0.clone(), &t.1))
-    }
-
-    pub fn add(&mut self, s: Slot, b: Ballot, c: C) {
-        match self.s.entry(s) {
-            Entry::Occupied(mut v) => {
-                // replace the slot if the ballot stored is
-                // less than the current ballot
-                if v.get().0.lt(&b) {
-                    v.insert((b, c));
-                }
-            }
-            Entry::Vacant(e) => {
-                // blind insert, new entry
-                e.insert((b, c));
-            }
+impl QuorumSet {
+    /// Creates a QuorumSet with a given size for quorum.
+    pub fn with_size(size: usize) -> QuorumSet {
+        QuorumSet {
+            quorum_size: size,
+            values: HashSet::with_capacity(size),
         }
+    }
 
+    /// Flag indicating whether quorum has been reached.
+    pub fn has_quorum(&self) -> bool {
+        self.values.len() >= self.quorum_size
+    }
+
+    /// Inserts a node into the set
+    pub fn insert(&mut self, n: NodeId) {
+        self.values.insert(n);
+    }
+
+    /// Flag indicating whether the set contains a given node
+    pub fn contains(&self, n: NodeId) -> bool {
+        self.values.contains(&n)
+    }
+
+    /// Removes a node from the set
+    pub fn remove(&mut self, n: NodeId) {
+        self.values.remove(&n);
+    }
+
+    /// Flag indicating whether the set is empty
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 }
 
-pub struct Config {
-    // TODO: [Co-locate]
-    id: Node,
-    leaders: HashSet<Node>,
-    acceptors: HashSet<Node>,
-    replicas: HashSet<Node>,
+
+pub struct Configuration {}
+
+impl Configuration {
+    fn quorum_size(&self) -> usize {
+        // TODO: ...
+        2
+    }
+
+    fn current(&self) -> NodeId {
+        unimplemented!("")
+    }
 }
 
-// messenger of command C
-pub trait Messenger<C: Clone> {
-    type Response;
-
-    fn send(&self, n: Node, m: PaxosMessage<C>) -> Self::Response;
-}
-
-pub enum PaxosMessage<C: Clone> {
-    Prepare(Ballot),
-    Promise(Ballot, CommandSet<C>),
-    PromiseNack(Ballot),
-    Accepted(Ballot, Slot),
-}
 
 
 #[cfg(test)]
@@ -105,43 +122,45 @@ mod tests {
 
     #[test]
     fn test_ballot_cmp() {
-        let b = Ballot(5, Node("a".to_string()));
-        assert!(Ballot(2, Node("a".to_string())).lt(&b));
-        assert!(Ballot(8, Node("a".to_string())).gt(&b));
+        let b = Ballot(5, 0);
+        assert!(Ballot(2, 0).lt(&b));
+        assert!(Ballot(8, 0).gt(&b));
+        assert_eq!(Ballot(5, 0), b);
         assert!(b.ge(&b));
         assert!(b.le(&b));
-        assert!(Ballot(5, Node("b".to_string())).gt(&b));
+        assert!(Ballot(5, 1).gt(&b));
     }
 
     #[test]
-    fn test_commandset_add() {
-        let mut cs = CommandSet::<u8>::new();
+    fn test_quorumset() {
+        let mut qs = QuorumSet::with_size(3);
 
-        // initially empty
-        assert_eq!(None, cs.get(Slot(5)));
+        assert!(!qs.has_quorum());
+        assert!(qs.is_empty());
 
-        {
-            // then value 4
-            cs.add(Slot(5), Ballot(0, Node("".to_string())), 4u8);
-            let (b, v) = cs.get(Slot(5)).unwrap();
-            assert_eq!(Ballot(0, Node("".to_string())), b);
-            assert_eq!(4u8, *v);
-        }
+        qs.insert(5);
+        assert!(qs.contains(5));
+        assert!(!qs.has_quorum());
+        assert!(!qs.is_empty());
 
-        {
-            // now value 0
-            cs.add(Slot(5), Ballot(2, Node("".to_string())), 0u8);
-            let (b, v) = cs.get(Slot(5)).unwrap();
-            assert_eq!(Ballot(2, Node("".to_string())), b);
-            assert_eq!(0u8, *v);
-        }
+        qs.insert(6);
+        assert!(qs.contains(6));
+        assert!(!qs.has_quorum());
+        assert!(!qs.is_empty());
 
-        {
-            // stays at value 0 (ballot 1 < ballot 2)
-            cs.add(Slot(5), Ballot(0, Node("".to_string())), 1u8);
-            let (b, v) = cs.get(Slot(5)).unwrap();
-            assert_eq!(Ballot(2, Node("".to_string())), b);
-            assert_eq!(0u8, *v);
-        }
+        qs.insert(6);
+        assert!(qs.contains(6));
+        assert!(!qs.has_quorum());
+        assert!(!qs.is_empty());
+
+        qs.insert(7);
+        assert!(qs.contains(7));
+        assert!(qs.has_quorum());
+        assert!(!qs.is_empty());
+
+        qs.remove(5);
+        assert!(!qs.contains(5));
+        assert!(!qs.has_quorum());
+        assert!(!qs.is_empty());
     }
 }

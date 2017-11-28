@@ -1,14 +1,14 @@
-[root]
+[[package]]
+name = "assert_matches"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "paxos"
 version = "0.1.0"
 dependencies = [
- "matches 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "assert_matches 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
-[[package]]
-name = "matches"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-
 [metadata]
-"checksum matches 0.1.2 (registry+https://github.com/rust-lang/crates.io-index)" = "15305656809ce5a4805b1ff2946892810992197ce1270ff79baded852187942e"
+"checksum assert_matches 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)" = "9e772942dccdf11b368c31e044e4fca9189f80a773d2f0808379de65894cbf57"
