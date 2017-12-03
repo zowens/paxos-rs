@@ -1,7 +1,10 @@
 [package]
+authors = ["Zack Owens <zowens2009@gmail.com>"]
 name = "paxos"
 version = "0.1.0"
-authors = ["Zack Owens <zowens2009@gmail.com>"]
+
+[dependencies]
+log = "0.3.8"
 
 [dev-dependencies]
 assert_matches = "1.1.0"

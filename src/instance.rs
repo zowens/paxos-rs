@@ -106,6 +106,7 @@ impl Proposer {
     fn observe_ballot(&mut self, ballot: Ballot) {
         // empty OR existing highest < ballot causes highest to be set
         if self.highest.is_none() || self.highest.filter(|b| b < &ballot).is_some() {
+            trace!("Proposer observed higher {:?}", ballot);
             self.highest = Some(ballot);
         }
     }
@@ -125,6 +126,8 @@ impl Proposer {
             highest_accepted: None,
             value,
         };
+
+        debug!("Starting prepare with {:?}", new_ballot);
 
         Prepare(self.current, new_ballot)
     }
@@ -163,6 +166,17 @@ impl Proposer {
     /// if the rejection has quorum.
     fn receive_reject(&mut self, reject: Reject) -> Option<Prepare> {
         let Reject(peer, proposed, promised) = reject;
+        debug!(
+            "Received REJECT for {:?} with greater {:?} from peer {}",
+            proposed,
+            promised,
+            peer
+        );
+        assert!(
+            proposed < promised,
+            "Ballot received in REJECT was >= proposed"
+        );
+
         self.observe_ballot(promised);
 
         let lost_leadership = match self.state {
@@ -188,6 +202,7 @@ impl Proposer {
         };
         // TODO: should we actually send out another prepare here?
         if lost_leadership {
+            debug!("Lost leadership, restarting prepare");
             let value = self.state.take_value();
             Some(self.prepare(value))
         } else {
@@ -198,6 +213,7 @@ impl Proposer {
     /// Note a promise from a peer. An ACCEPT message is returned if quorum is detected.
     fn receive_promise(&mut self, promise: Promise) -> Option<Accept> {
         let Promise(peer, proposed, accepted) = promise;
+        debug!("Received PROMISE for {:?} from peer {}", proposed, peer);
 
         self.observe_ballot(proposed);
 
@@ -213,6 +229,7 @@ impl Proposer {
             // only allow matching proposals (we could have restarted Phase 1) and only update when
             // we see a new promise from a new peer
             {
+                trace!("New promise from peer received");
                 promises.insert(peer);
 
                 // override the proposed value to send on the accept if the highest_accept is <
@@ -223,6 +240,7 @@ impl Proposer {
                         _ => true,
                     };
                     if set {
+                        trace!("Peer has the highest accepted value thus far");
                         *highest_accepted = Some(bal);
                         *value = Some(v);
                     }
@@ -236,6 +254,8 @@ impl Proposer {
                 return None;
             }
         };
+
+        debug!("Quorum reached for Phase 1 of {:?}", proposed);
 
         // proposer has quorum from acceptors, upgrade to Leader and start
         // Phase 2 if we already have a value
@@ -284,8 +304,13 @@ impl Acceptor {
         let opposing_ballot = self.promised.filter(|b| b > &proposal);
 
         match opposing_ballot {
-            Some(b) => Err(Reject(self.current, proposal, b)),
+            Some(b) => {
+                debug!("Rejecting proposed {:?} with greater {:?}", proposal, b);
+                Err(Reject(self.current, proposal, b))
+            }
             None => {
+                debug!("Promising {:?}", proposal);
+
                 // track the proposal as the highest promise
                 // (in order to reject ballots < proposal)
                 self.promised = Some(proposal);
@@ -301,8 +326,17 @@ impl Acceptor {
         let Accept(_peer, proposal, value) = accept;
         let opposing_ballot = self.promised.filter(|b| b > &proposal);
         match opposing_ballot {
-            Some(b) => Err(Reject(self.current, proposal, b)),
+            Some(b) => {
+                debug!(
+                    "Rejecting ACCEPT message with ballot {:?} because of greater {:?}",
+                    proposal,
+                    b
+                );
+                Err(Reject(self.current, proposal, b))
+            }
             None => {
+                debug!("Accepting proposal {:?}", proposal);
+
                 // set the accepted value, which is sent to subsequent PROMISE responses
                 // with ballts greater than the current proposal
                 self.accepted = Some((proposal, value.clone()));
@@ -393,6 +427,7 @@ impl Learner {
                     Occupied(mut e) => {
                         // if this is an older ballot, discard it
                         if *e.get() >= proposal {
+                            trace!("Ignoring outdated {:?}", proposal);
                             return None;
                         }
 
@@ -401,6 +436,7 @@ impl Learner {
                         // remove the acceptor's old proposal from the
                         // set of proposals
                         if let Occupied(mut e) = proposals.entry(prev) {
+                            trace!("Dropping previous proposal from this acceptor");
                             let remove = {
                                 let v = e.get_mut();
                                 v.acceptors.remove(peer);
@@ -423,6 +459,7 @@ impl Learner {
                 }
 
                 // insert the ACCEPTED as part of the ballot
+                debug!("ACCEPTED for {:?}", proposal);
                 let quorum = self.quorum;
                 let mut proposal_status = proposals.entry(proposal).or_insert_with(|| {
                     ProposalStatus {
@@ -463,6 +500,8 @@ impl Learner {
                 return Some(Resolution(self.current, accepted, value.clone()));
             }
         };
+
+        debug!("Quorum reached for Phase 2 {:?}", proposal);
 
         // a final value has been selected, move the state to final
         self.state = LearnerState::Final {
