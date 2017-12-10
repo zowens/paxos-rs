@@ -33,30 +33,34 @@ pub trait Messenger {
 
     /// Catchup will send a caught up value from an instance.
     fn send_catchup(&self, peer: NodeId, inst: Instance, current: Value);
-    // TODO: batch within catchup?
 }
 
 #[allow(unused_variables)]
 pub trait Handler {
     /// Handles PREPARE messages
-    fn on_prepare(&mut self, peer: NodeId, inst: Instance, proposal: Ballot) {}
+    fn on_prepare(&mut self, peer: NodeId, inst: Instance, proposal: Ballot);
 
     /// Handles PROMISE messages
-    fn on_promise(&mut self, peer: NodeId, inst: Instance, last_accepted: Option<(Ballot, Value)>) {
-    }
+    fn on_promise(
+        &mut self,
+        peer: NodeId,
+        inst: Instance,
+        proposal: Ballot,
+        last_accepted: Option<(Ballot, Value)>,
+    );
 
     /// Handles ACCEPT messages
-    fn on_accept(&mut self, peer: NodeId, inst: Instance, proposal: Ballot, value: Value) {}
+    fn on_accept(&mut self, peer: NodeId, inst: Instance, proposal: Ballot, value: Value);
 
     /// Handles ACCEPTED messages
-    fn on_accepted(&mut self, peer: NodeId, inst: Instance, proposal: Ballot, value: Value) {}
+    fn on_accepted(&mut self, peer: NodeId, inst: Instance, proposal: Ballot, value: Value);
 
     /// Handles REJECT messages
-    fn on_reject(&mut self, peer: NodeId, inst: Instance, proposal: Ballot, promised: Ballot) {}
+    fn on_reject(&mut self, peer: NodeId, inst: Instance, proposal: Ballot, promised: Ballot);
 
     /// Handles SYNC request messages
-    fn on_sync(&mut self, peer: NodeId, inst: Instance) {}
+    fn on_sync(&mut self, peer: NodeId, inst: Instance);
 
     /// Handles CATCHUP messages
-    fn on_catchup(&mut self, peer: NodeId, inst: Instance, current: Value) {}
+    fn on_catchup(&mut self, peer: NodeId, inst: Instance, current: Value);
 }

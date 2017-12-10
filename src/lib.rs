@@ -1,4 +1,4 @@
-#![feature(conservative_impl_trait, option_filter)]
+#![feature(option_filter)]
 #[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
@@ -7,9 +7,12 @@ extern crate log;
 
 mod messenger;
 mod instance;
+mod chain;
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::collections::hash_map;
+use std::net::SocketAddr;
 
 /// Ballot numbering is an increasing number in order to order proposals
 /// across multiple nodes. Ballots are unique in that ballot numbers between
@@ -102,20 +105,57 @@ impl QuorumSet {
     }
 }
 
-
-pub struct Configuration {}
+// TODO: support reconfiguration
+pub struct Configuration {
+    peers: HashMap<NodeId, SocketAddr>,
+    current: (NodeId, SocketAddr),
+}
 
 impl Configuration {
-    fn quorum_size(&self) -> usize {
-        // TODO: ...
-        2
+    pub fn new<I>(current: (NodeId, SocketAddr), peers: I) -> Configuration
+    where
+        I: Iterator<Item = (NodeId, SocketAddr)>,
+    {
+        Configuration {
+            peers: peers.collect(),
+            current,
+        }
     }
 
-    fn current(&self) -> NodeId {
-        unimplemented!("")
+    pub fn quorum_size(&self) -> usize {
+        1 + (self.peers.len() / 2)
+    }
+
+    pub fn current(&self) -> NodeId {
+        self.current.0
+    }
+
+    pub fn peers(&self) -> PeerIter {
+        PeerIter {
+            iter: self.peers.keys(),
+        }
+    }
+
+    pub fn address(&self, node: NodeId) -> Option<SocketAddr> {
+        if node == self.current.0 {
+            Some(self.current.1)
+        } else {
+            self.peers.get(&node).cloned()
+        }
     }
 }
 
+pub struct PeerIter<'a> {
+    iter: hash_map::Keys<'a, NodeId, SocketAddr>,
+}
+
+impl<'a> Iterator for PeerIter<'a> {
+    type Item = NodeId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().cloned()
+    }
+}
 
 
 #[cfg(test)]
