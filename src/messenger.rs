@@ -1,4 +1,5 @@
-use super::*;
+use super::Instance;
+use algo::{Ballot, NodeId, Value};
 
 #[allow(unused_variables)]
 pub trait Messenger {

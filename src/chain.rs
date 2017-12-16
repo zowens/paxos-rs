@@ -1,5 +1,5 @@
-use super::{Ballot, Configuration, Instance, NodeId, Value};
-use instance::*;
+use super::{Configuration, Instance};
+use algo::*;
 use messenger::*;
 
 /// Replicated mutable value register, which utilizes Paxos
@@ -180,7 +180,7 @@ impl<M: Messenger> Handler for MultiPaxosValue<M> {
             .receive_accepted(Accepted(peer, proposal, value));
 
         // if there is quorum, we can advance to the next instance
-        if let Some(Resolution(_, ballot, value)) = resol {
+        if let Some(Resolution(_, _, value)) = resol {
             let new_inst = self.instance + 1;
             self.advance_instance(new_inst, Some(value));
         }
