@@ -72,6 +72,12 @@ impl Proposer {
         }
     }
 
+    /// Regenerates a PREPARE message with a new ballot
+    fn force_prepare(&mut self) -> Prepare {
+        let val = self.state.take_value();
+        self.prepare(val)
+    }
+
     /// Prepare sets state to candidate and begins to track promises.
     fn prepare(&mut self, value: Option<Value>) -> Prepare {
         let new_ballot = self.highest
@@ -164,8 +170,7 @@ impl Proposer {
         // TODO: should we actually send out another prepare here?
         if lost_leadership {
             debug!("Lost leadership, restarting prepare");
-            let value = self.state.take_value();
-            Some(self.prepare(value))
+            Some(self.force_prepare())
         } else {
             None
         }
@@ -513,16 +518,16 @@ impl PaxosInstance {
         }
     }
 
-    /// Starts prepare to begin Phase 1.
+    /// Starts Phase 1 with a possibly new PREPARE message.
     pub fn prepare(&mut self) -> Prepare {
-        self.proposer.prepare(None)
+        self.proposer.force_prepare()
     }
 
     /// Proposes a value once Phase 1 is completed. It is not guaranteed that the value will
     /// be accepted, as the maximum accepted value from acceptors is used as preference.
     ///
     /// TODO: Do we need to note if the value is not used?
-    fn propose_value(&mut self, v: Value) -> Option<ProposerMsg> {
+    pub fn propose_value(&mut self, v: Value) -> Option<ProposerMsg> {
         self.proposer.propose_value(v)
     }
 

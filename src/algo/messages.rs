@@ -2,17 +2,17 @@ use super::{Ballot, NodeId, Value};
 
 /// PREPARE message is the Phase 1a message from a proposer role sent
 /// to acceptors to receive agreement to not accept ballots of lower value.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Prepare(pub NodeId, pub Ballot);
 
 /// ACCEPT message is the Phase 2a message from a proposer role sent
 /// to acceptors to accept a value. The ACCEPT message is predicated
 /// on the proposer receiving quorum from Phase 1.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Accept(pub NodeId, pub Ballot, pub Value);
 
 /// Either of the proposer message values.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ProposerMsg {
     Prepare(Prepare),
     Accept(Accept),
