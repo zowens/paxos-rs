@@ -224,16 +224,15 @@ impl<M: Messenger> Handler for MultiPaxosRegister<M> {
         }
 
         match self.paxos.receive_accept(Accept(peer, proposal, value)) {
-            Ok(Accepted(_, ballot, value)) => {
+            Ok(accepted @ Accepted(..)) => {
                 self.state_handler.persist(State {
                     instance: self.instance,
                     current_value: self.value.clone(),
-                    promised: Some(ballot),
-                    accepted: Some((ballot, value.clone())),
+                    promised: Some(accepted.1),
+                    accepted: Some((accepted.1, accepted.2.clone())),
                 });
 
-                self.messenger
-                    .send_accepted(peer, self.instance, ballot, value);
+                self.send_accepted(&accepted);
             }
             Err(Reject(_, ballot, opposing_ballot)) => {
                 self.messenger
