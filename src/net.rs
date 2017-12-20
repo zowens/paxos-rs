@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::io;
 use tokio_core::net::{UdpCodec, UdpFramed, UdpSocket};
 use tokio_core::reactor::{Core, Handle};
-use futures::{Future, Sink, Stream};
+use futures::{Async, Future, Poll, Sink, Stream};
 use futures::stream::SplitStream;
 use config::Configuration;
 use messenger::{Handler, Messenger};
@@ -257,7 +257,7 @@ fn deserialize_ballot<'a>(reader: messages::ballot::Reader<'a>) -> Ballot {
 
 fn dispatch<H>(
     reader: Reader<OwnedSegments>,
-    mut handler: H,
+    handler: &mut H,
     peer: NodeId,
 ) -> Result<(), DeserializeError>
 where
@@ -371,6 +371,50 @@ impl UdpServer {
         UdpMessenger {
             sink: self.send_msg_sink.clone(),
             config: self.config.clone(),
+        }
+    }
+
+    pub fn run<H: Handler + 'static>(mut self, h: H) -> Result<(), ()> {
+        self.core.run(ReceiveFuture {
+            handler: h,
+            recv_msg_stream: self.recv_msg_stream,
+            config: self.config,
+        })
+    }
+}
+
+struct ReceiveFuture<H: Handler + 'static> {
+    handler: H,
+    config: Configuration,
+    recv_msg_stream: SplitStream<UdpFramed<Codec>>,
+}
+
+impl<H: Handler + 'static> Future for ReceiveFuture<H> {
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        loop {
+            let (addr, reader) = match self.recv_msg_stream.poll() {
+                Ok(Async::Ready(Some(v))) => v,
+                Ok(Async::Ready(None)) => {
+                    warn!("Done polling, receive stream returned NONE");
+                    return Ok(Async::Ready(()));
+                }
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Err(e) => {
+                    error!("Error receiving UDP message: {:?}", e);
+                    return Err(());
+                }
+            };
+
+            if let Some(peer) = self.config.peer_id(&addr) {
+                if let Err(e) = dispatch(reader, &mut self.handler, peer) {
+                    error!("Error with Paxos message: {:?}", e);
+                }
+            } else {
+                debug!("Unknown peer at {:?}", addr);
+            }
         }
     }
 }

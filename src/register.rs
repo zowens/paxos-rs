@@ -1,4 +1,3 @@
-use std::time::Duration;
 use super::Instance;
 use algo::*;
 use messenger::*;

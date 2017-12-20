@@ -10,11 +10,11 @@ extern crate rand;
 extern crate tokio_core;
 
 mod algo;
-mod messenger;
-mod multipaxos;
-mod net;
-mod register;
-mod config;
+pub mod messenger;
+pub mod multipaxos;
+pub mod net;
+pub mod register;
+pub mod config;
 
 /// An instance is a "round" of Paxos. Instances are chained to
 /// form a sequence of values.

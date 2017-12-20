@@ -8,6 +8,7 @@ use rand::{weak_rng, Rng, XorShiftRng};
 
 struct Inner {
     peers: HashMap<NodeId, SocketAddr>,
+    socket_to_peer: HashMap<SocketAddr, NodeId>,
     rand: XorShiftRng,
 }
 
@@ -24,10 +25,14 @@ impl Configuration {
     where
         I: Iterator<Item = (NodeId, SocketAddr)>,
     {
+        let peers: HashMap<NodeId, SocketAddr> = peers.collect();
+        let socket_to_peer: HashMap<SocketAddr, NodeId> =
+            peers.iter().map(|e| (*e.1, *e.0)).collect();
         Configuration {
             current,
             inner: Rc::new(RefCell::new(Inner {
-                peers: peers.collect(),
+                peers,
+                socket_to_peer,
                 rand: weak_rng(),
             })),
         }
@@ -60,8 +65,13 @@ impl Configuration {
     where
         I: Iterator<Item = (NodeId, SocketAddr)>,
     {
+        let peers: HashMap<NodeId, SocketAddr> = peers.collect();
+        let socket_to_peer: HashMap<SocketAddr, NodeId> =
+            peers.iter().map(|e| (*e.1, *e.0)).collect();
+
         let mut v = self.inner.borrow_mut();
-        v.peers = peers.collect();
+        v.peers = peers;
+        v.socket_to_peer = socket_to_peer;
     }
 
     /// Randomly selects a peer to transmit messages.
@@ -77,6 +87,15 @@ impl Configuration {
             Some(self.current.1)
         } else {
             self.inner.borrow().peers.get(&node).cloned()
+        }
+    }
+
+    /// Gets the peer ID from a socket address.
+    pub fn peer_id(&self, address: &SocketAddr) -> Option<NodeId> {
+        if address == &self.current.1 {
+            Some(self.current.0)
+        } else {
+            self.inner.borrow().socket_to_peer.get(address).cloned()
         }
     }
 }
