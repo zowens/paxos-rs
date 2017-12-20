@@ -1,26 +1,30 @@
 use std::net::SocketAddr;
 use std::io;
 use tokio_core::net::{UdpCodec, UdpFramed, UdpSocket};
-use tokio_core::reactor::Handle;
-use futures::Sink;
-use futures::stream::SplitSink;
+use tokio_core::reactor::{Core, Handle};
+use futures::{Future, Sink, Stream};
+use futures::stream::SplitStream;
 use config::Configuration;
-use messenger::Messenger;
+use messenger::{Handler, Messenger};
 use messages_capnp as messages;
 use super::Instance;
 use algo::{Ballot, NodeId, Value};
 
+use capnp::{Error as CapnpError, NotInSchema};
 use capnp::message::{Builder, HeapAllocator, Reader, ReaderOptions};
 use capnp::serialize::OwnedSegments;
 use capnp::serialize_packed::*;
 
-use futures::unsync::mpsc::UnboundedSender;
+use futures::unsync::mpsc::{unbounded, UnboundedSender};
 
 struct Codec {}
 
+type CodecIn = (SocketAddr, Reader<OwnedSegments>);
+type CodecOut = (SocketAddr, Builder<HeapAllocator>);
+
 impl UdpCodec for Codec {
-    type In = (SocketAddr, Reader<OwnedSegments>);
-    type Out = (SocketAddr, Builder<HeapAllocator>);
+    type In = CodecIn;
+    type Out = CodecOut;
 
     fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Self::In> {
         let mut cursor = io::Cursor::new(buf);
@@ -43,7 +47,7 @@ impl UdpCodec for Codec {
 
 
 pub struct UdpMessenger {
-    sink: UnboundedSender<(SocketAddr, Builder<HeapAllocator>)>,
+    sink: UnboundedSender<CodecOut>,
     config: Configuration,
 }
 
@@ -218,5 +222,155 @@ impl Messenger for UdpMessenger {
         }
 
         self.send(peer, builder);
+    }
+}
+
+#[derive(Debug)]
+enum DeserializeError {
+    Capnp(CapnpError),
+    CapnpNotInSchema(NotInSchema),
+}
+
+impl From<CapnpError> for DeserializeError {
+    fn from(e: CapnpError) -> DeserializeError {
+        DeserializeError::Capnp(e)
+    }
+}
+
+impl From<NotInSchema> for DeserializeError {
+    fn from(e: NotInSchema) -> DeserializeError {
+        DeserializeError::CapnpNotInSchema(e)
+    }
+}
+
+impl Into<io::Error> for DeserializeError {
+    fn into(self) -> io::Error {
+        error!("Error reading Paxos message from peer: {:?}", self);
+        io::Error::new(io::ErrorKind::InvalidData, "Invalid Paxos Message")
+    }
+}
+
+#[inline]
+fn deserialize_ballot<'a>(reader: messages::ballot::Reader<'a>) -> Ballot {
+    Ballot(reader.get_id(), reader.get_node_id())
+}
+
+fn dispatch<H>(
+    reader: Reader<OwnedSegments>,
+    mut handler: H,
+    peer: NodeId,
+) -> Result<(), DeserializeError>
+where
+    H: Handler,
+{
+    use messages_capnp::paxos_message::Which as WhichMsg;
+    use messages_capnp::paxos_message::promise::Which as WhichLastAccepted;
+
+    let paxos_msg = reader.get_root::<messages::paxos_message::Reader>()?;
+
+    let instance = { paxos_msg.borrow().get_instance() };
+
+    match paxos_msg.which()? {
+        WhichMsg::Prepare(prepare) => {
+            let prepare = prepare?;
+            let proposal = deserialize_ballot(prepare.get_proposal()?);
+            handler.on_prepare(peer, instance, proposal);
+        }
+        WhichMsg::Promise(promise) => {
+            let promise = promise?;
+            let proposal = { deserialize_ballot(promise.borrow().get_proposal()?) };
+
+            let last_accepted = {
+                match promise.which()? {
+                    WhichLastAccepted::NoneAccepted(_) => None,
+                    WhichLastAccepted::LastAccepted(last_accepted) => {
+                        let last_accepted = last_accepted?;
+                        let bal = { deserialize_ballot(last_accepted.borrow().get_proposal()?) };
+                        let val = last_accepted.get_value()?;
+                        Some((bal, Vec::from(val)))
+                    }
+                }
+            };
+
+            handler.on_promise(peer, instance, proposal, last_accepted);
+        }
+        WhichMsg::Accept(accept) => {
+            let accept = accept?;
+            let proposal = { deserialize_ballot(accept.borrow().get_proposal()?) };
+            let value = accept.get_value()?;
+            handler.on_accept(peer, instance, proposal, Vec::from(value));
+        }
+        WhichMsg::Accepted(accepted) => {
+            let accepted = accepted?;
+            let proposal = { deserialize_ballot(accepted.borrow().get_proposal()?) };
+            let value = accepted.get_value()?;
+            handler.on_accepted(peer, instance, proposal, Vec::from(value));
+        }
+        WhichMsg::Reject(reject) => {
+            let reject = reject?;
+            let proposal = { deserialize_ballot(reject.borrow().get_proposal()?) };
+            let promised = { deserialize_ballot(reject.borrow().get_promised()?) };
+
+            handler.on_reject(peer, instance, proposal, promised);
+        }
+        WhichMsg::Sync(sync_req) => {
+            let _ = sync_req?;
+            handler.on_sync(peer, instance);
+        }
+        WhichMsg::Catchup(catchup) => {
+            let catchup = catchup?;
+            let value = catchup.get_value()?;
+            handler.on_catchup(peer, instance, Vec::from(value));
+        }
+    }
+
+    Ok(())
+}
+
+pub struct UdpServer {
+    core: Core,
+    config: Configuration,
+    send_msg_sink: UnboundedSender<CodecOut>,
+    recv_msg_stream: SplitStream<UdpFramed<Codec>>,
+}
+
+impl UdpServer {
+    pub fn new(config: Configuration) -> io::Result<UdpServer> {
+        let core = Core::new()?;
+        let handle = core.handle();
+
+        let (snd, recv) = unbounded::<CodecOut>();
+        let (send_msg, recv_msg) = UdpSocket::bind(config.current_address(), &handle)?
+            .framed(Codec {})
+            .split();
+
+        // forward all messenger messages over UDP
+        handle.spawn(
+            send_msg
+                .send_all(recv.map_err(|_| io::Error::new(io::ErrorKind::Other, "")))
+                .map(|_| ())
+                .map_err(|e| {
+                    error!("Error sending Paxos message: {:?}", e);
+                    ()
+                }),
+        );
+
+        Ok(UdpServer {
+            core,
+            config,
+            send_msg_sink: snd,
+            recv_msg_stream: recv_msg,
+        })
+    }
+
+    pub fn handle(&self) -> Handle {
+        self.core.handle()
+    }
+
+    pub fn messenger(&self) -> UdpMessenger {
+        UdpMessenger {
+            sink: self.send_msg_sink.clone(),
+            config: self.config.clone(),
+        }
     }
 }

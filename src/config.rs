@@ -1,14 +1,21 @@
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::net::SocketAddr;
+use std::rc::Rc;
+use std::cell::{Ref, RefCell};
 use algo::NodeId;
 use rand::{weak_rng, Rng, XorShiftRng};
 
-/// Configuration holds the state of the membership of the cluster.
-pub struct Configuration {
+struct Inner {
     peers: HashMap<NodeId, SocketAddr>,
-    current: (NodeId, SocketAddr),
     rand: XorShiftRng,
+}
+
+/// Configuration holds the state of the membership of the cluster.
+#[derive(Clone)]
+pub struct Configuration {
+    current: (NodeId, SocketAddr),
+    inner: Rc<RefCell<Inner>>,
 }
 
 impl Configuration {
@@ -18,15 +25,17 @@ impl Configuration {
         I: Iterator<Item = (NodeId, SocketAddr)>,
     {
         Configuration {
-            peers: peers.collect(),
             current,
-            rand: weak_rng(),
+            inner: Rc::new(RefCell::new(Inner {
+                peers: peers.collect(),
+                rand: weak_rng(),
+            })),
         }
     }
 
     /// Size of quorum
     pub fn quorum_size(&self) -> usize {
-        1 + (self.peers.len() / 2)
+        1 + (self.inner.borrow().peers.len() / 2)
     }
 
     /// Current node identifier
@@ -34,17 +43,32 @@ impl Configuration {
         self.current.0
     }
 
+    /// Current node address
+    pub fn current_address(&self) -> &SocketAddr {
+        &self.current.1
+    }
+
     /// Iterator containing `NodeId` values of peers
-    pub fn peers(&self) -> PeerIter {
-        PeerIter {
-            iter: self.peers.keys(),
+    pub fn peers(&self) -> PeerIntoIter {
+        PeerIntoIter {
+            r: self.inner.borrow(),
         }
+    }
+
+    /// Sets the membership of peers. This allows for reconfiguration.
+    pub fn set_peers<I>(&self, peers: I)
+    where
+        I: Iterator<Item = (NodeId, SocketAddr)>,
+    {
+        let mut v = self.inner.borrow_mut();
+        v.peers = peers.collect();
     }
 
     /// Randomly selects a peer to transmit messages.
     pub fn random_peer(&mut self) -> Option<NodeId> {
-        let n = self.rand.gen_range(0, self.peers.len());
-        self.peers.keys().skip(n).next().cloned()
+        let len = self.inner.borrow().peers.len();
+        let n = self.inner.borrow_mut().rand.gen_range(0, len);
+        self.inner.borrow().peers.keys().skip(n).next().cloned()
     }
 
     /// Gets the address of a node.
@@ -52,7 +76,23 @@ impl Configuration {
         if node == self.current.0 {
             Some(self.current.1)
         } else {
-            self.peers.get(&node).cloned()
+            self.inner.borrow().peers.get(&node).cloned()
+        }
+    }
+}
+
+/// `IntoIterator` for peers
+pub struct PeerIntoIter<'a> {
+    r: Ref<'a, Inner>,
+}
+
+impl<'a, 'b: 'a> IntoIterator for &'b PeerIntoIter<'a> {
+    type IntoIter = PeerIter<'a>;
+    type Item = NodeId;
+
+    fn into_iter(self) -> PeerIter<'a> {
+        PeerIter {
+            iter: self.r.peers.keys(),
         }
     }
 }

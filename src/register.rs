@@ -3,7 +3,6 @@ use super::Instance;
 use algo::*;
 use messenger::*;
 use multipaxos::*;
-use retry::*;
 use config::*;
 
 /// Replicated mutable value register, which utilizes Paxos
@@ -65,14 +64,16 @@ impl<M: Messenger> MultiPaxosRegister<M> {
 
     /// Broadcasts PREPARE messages to all peers
     fn send_prepare(&mut self, prepare: &Prepare) {
-        for peer in self.config.peers() {
+        let peers = self.config.peers();
+        for peer in peers.into_iter() {
             self.messenger.send_prepare(peer, self.instance, prepare.1);
         }
     }
 
     /// Broadcasts ACCEPT messages to all peers
     fn send_accept(&mut self, accept: &Accept) {
-        for peer in self.config.peers() {
+        let peers = self.config.peers();
+        for peer in peers.into_iter() {
             self.messenger
                 .send_accept(peer, self.instance, accept.1, accept.2.clone());
         }
@@ -80,7 +81,8 @@ impl<M: Messenger> MultiPaxosRegister<M> {
 
     /// Broadcasts ACCEPTED messages to all peers
     fn send_accepted(&mut self, accepted: &Accepted) {
-        for peer in self.config.peers() {
+        let peers = self.config.peers();
+        for peer in peers.into_iter() {
             self.messenger
                 .send_accepted(peer, self.instance, accepted.1, accepted.2.clone());
         }
