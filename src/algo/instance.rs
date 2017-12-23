@@ -563,16 +563,6 @@ impl PaxosInstance {
         self.proposer.observe_ballot(accepted.1);
         self.learner.receive_accepted(accepted)
     }
-
-    /// Ballot last promised.
-    pub fn last_promised(&self) -> Option<Ballot> {
-        self.acceptor.promised
-    }
-
-    /// Ballot last accepted.
-    pub fn last_accepted(&self) -> Option<(Ballot, Value)> {
-        self.acceptor.accepted.clone()
-    }
 }
 
 #[cfg(test)]

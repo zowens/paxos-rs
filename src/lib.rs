@@ -10,6 +10,7 @@ extern crate rand;
 extern crate tokio_core;
 
 mod algo;
+mod state;
 pub mod messenger;
 pub mod multipaxos;
 pub mod net;
