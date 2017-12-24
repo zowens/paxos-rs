@@ -1,4 +1,5 @@
 #![feature(option_filter)]
+#![allow(unknown_lints)]
 #[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
@@ -25,7 +26,7 @@ pub mod timer;
 /// In some implementations, this is also called a "Slot"
 pub type Instance = u64;
 
-#[allow(dead_code)]
+#[allow(dead_code, clippy)]
 mod messages_capnp {
     include!(concat!(env!("OUT_DIR"), "/schema/messages_capnp.rs"));
 }

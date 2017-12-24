@@ -78,7 +78,7 @@ impl Configuration {
     pub fn random_peer(&mut self) -> Option<NodeId> {
         let len = self.inner.borrow().peers.len();
         let n = self.inner.borrow_mut().rand.gen_range(0, len);
-        self.inner.borrow().peers.keys().skip(n).next().cloned()
+        self.inner.borrow().peers.keys().nth(n).cloned()
     }
 
     /// Gets the address of a node.

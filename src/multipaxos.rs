@@ -137,7 +137,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// Broadcasts PREPARE messages to all peers
     fn send_prepare(&mut self, prepare: &Prepare) {
         let peers = self.config.peers();
-        for peer in peers.into_iter() {
+        for peer in &peers {
             self.send_multipaxos(MultiPaxosMessage::Prepare(
                 self.instance,
                 Prepare(peer, prepare.1),
@@ -148,7 +148,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// Broadcasts ACCEPT messages to all peers
     fn send_accept(&mut self, accept: &Accept) {
         let peers = self.config.peers();
-        for peer in peers.into_iter() {
+        for peer in &peers {
             self.send_multipaxos(MultiPaxosMessage::Accept(
                 self.instance,
                 Accept(peer, accept.1, accept.2.clone()),
@@ -159,7 +159,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// Broadcasts ACCEPTED messages to all peers
     fn send_accepted(&mut self, accepted: &Accepted) {
         let peers = self.config.peers();
-        for peer in peers.into_iter() {
+        for peer in &peers {
             self.send_multipaxos(MultiPaxosMessage::Accepted(
                 self.instance,
                 Accepted(peer, accepted.1, accepted.2.clone()),
@@ -412,12 +412,14 @@ impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
 }
 
 #[inline]
-fn from_poll<V>(s: Poll<Option<V>, ()>) -> io::Result<Option<V>>
-{
+fn from_poll<V>(s: Poll<Option<V>, ()>) -> io::Result<Option<V>> {
     match s {
         Ok(Async::Ready(Some(v))) => Ok(Some(v)),
         Ok(Async::Ready(None)) | Ok(Async::NotReady) => Ok(None),
-        Err(_) => Err(io::Error::new(io::ErrorKind::Other, "unexpected timer error"))
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "unexpected timer error",
+        )),
     }
 }
 
@@ -436,7 +438,7 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
         }
 
         // poll for sync
-        if let Some(_) = from_poll(self.sync_timer.poll())? {
+        if from_poll(self.sync_timer.poll())?.is_some() {
             self.poll_syncronization();
         }
 

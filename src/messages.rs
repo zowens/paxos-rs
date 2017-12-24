@@ -46,13 +46,13 @@ impl Into<io::Error> for DeserializeError {
 }
 
 #[inline]
-fn serialize_ballot<'a>(proposal: Ballot, mut builder: messages_capnp::ballot::Builder<'a>) {
+fn serialize_ballot(proposal: Ballot, mut builder: messages_capnp::ballot::Builder) {
     builder.set_id(proposal.0);
     builder.set_node_id(proposal.1);
 }
 
 #[inline]
-fn deserialize_ballot<'a>(reader: messages_capnp::ballot::Reader<'a>) -> Ballot {
+fn deserialize_ballot(reader: messages_capnp::ballot::Reader) -> Ballot {
     Ballot(reader.get_id(), reader.get_node_id())
 }
 
@@ -311,7 +311,7 @@ impl ClientMessage {
     }
 }
 
-/// Message handled by MultiPaxos machine
+/// Message handled by `MultiPaxos`
 pub enum Message {
     /// Message sent within the cluster
     MultiPaxos(MultiPaxosMessage),

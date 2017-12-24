@@ -29,9 +29,7 @@ impl UdpCodec for MultiPaxosCodec {
         let peer = msg.peer();
         let addr = match self.0.address(msg.peer()) {
             Some(addr) => addr,
-            None => {
-                panic!("No peer address for NodeId={}", peer);
-            }
+            None => panic!("No peer address for NodeId={}", peer),
         };
 
         if let Err(e) = msg.serialize(into) {
@@ -50,7 +48,7 @@ impl UdpCodec for ClientCodec {
     type Out = ClientMessage;
 
     fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<ClientMessage>> {
-        Ok(ClientMessage::deserialize(addr.clone(), buf)
+        Ok(ClientMessage::deserialize(*addr, buf)
             .map_err(|e| error!("Error deserializing message {:?}", e))
             .ok()
             .filter(|v| match *v {
@@ -105,8 +103,8 @@ impl UdpServer {
         let (paxos_sink, paxos_recv_stream) = self.framed.split();
         let (client_sink, client_recv_stream) = self.client_framed.split();
 
-        let paxos_recv_stream = paxos_recv_stream.filter_map(|v| v.map(|m| Message::MultiPaxos(m)));
-        let client_recv_stream = client_recv_stream.filter_map(|m| m.map(|m| Message::Client(m)));
+        let paxos_recv_stream = paxos_recv_stream.filter_map(|v| v.map(Message::MultiPaxos));
+        let client_recv_stream = client_recv_stream.filter_map(|m| m.map(Message::Client));
 
         // send replies from upstream to the network
         self.core.handle().spawn(EmptyFuture(ForwardMessage::new(
