@@ -21,20 +21,20 @@ pub enum ProposerMsg {
 /// PROMISE is the Phase 1b message sent from acceptors in reply to
 /// PREPARE messages. The ballot in the promise denotes that the acceptor
 /// will not accept ballots less than the promised ballot.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Promise(pub NodeId, pub Ballot, pub Option<(Ballot, Value)>);
 
 /// REJECT is a message sent from an acceptor in reploy to a proposer
 /// when a ballot is being proposed or seen in an ACCEPT message that
 /// preceeds the last promised value from the acceptor.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Reject(pub NodeId, pub Ballot, pub Ballot);
 
 /// ACCEPTED is the Phase 2b message that is broadcast from acceptors
 /// denoting acceptance of a value.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Accepted(pub NodeId, pub Ballot, pub Value);
 
 /// RESOLUTION is the result of a quorum of ACCEPTED messages being received.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Resolution(pub NodeId, pub Ballot, pub Value);

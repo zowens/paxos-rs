@@ -11,7 +11,7 @@ extern crate tokio_core;
 
 mod algo;
 mod state;
-pub mod messenger;
+pub mod messages;
 pub mod multipaxos;
 pub mod net;
 pub mod register;

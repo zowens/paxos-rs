@@ -23,7 +23,7 @@ pub struct StateHandler {}
 
 impl StateHandler {
     pub fn new() -> StateHandler {
-        StateHandler{}
+        StateHandler {}
     }
 
     pub fn load(&mut self) -> Option<State> {
@@ -35,4 +35,3 @@ impl StateHandler {
         // TODO: implement
     }
 }
-
