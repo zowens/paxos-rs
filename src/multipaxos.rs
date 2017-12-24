@@ -31,8 +31,8 @@ pub struct MultiPaxos<R: ReplicatedState> {
     retransmit_msg: Option<ProposerMsg>,
 
     // downstream is sent out from this node
-    downstream_sink: UnboundedSender<MultiPaxosMessage>,
-    downstream_stream: UnboundedReceiver<MultiPaxosMessage>,
+    downstream_sink: UnboundedSender<Message>,
+    downstream_stream: UnboundedReceiver<Message>,
 }
 
 impl<R: ReplicatedState> MultiPaxos<R> {
@@ -52,7 +52,7 @@ impl<R: ReplicatedState> MultiPaxos<R> {
             state_machine.apply_value(state.instance, v);
         }
 
-        let (downstream_sink, downstream_stream) = unbounded::<MultiPaxosMessage>();
+        let (downstream_sink, downstream_stream) = unbounded::<Message>();
 
         MultiPaxos {
             state_machine,
@@ -83,16 +83,28 @@ impl<R: ReplicatedState> MultiPaxos<R> {
             PaxosInstance::new(self.config.current(), self.config.quorum_size(), None, None);
     }
 
+    #[inline]
+    fn send_multipaxos(&self, m: MultiPaxosMessage) {
+        self.downstream_sink
+            .unbounded_send(Message::MultiPaxos(m))
+            .unwrap();
+    }
+
+    #[inline]
+    fn send_client(&self, m: ClientMessage) {
+        self.downstream_sink
+            .unbounded_send(Message::Client(m))
+            .unwrap();
+    }
+
     /// Broadcasts PREPARE messages to all peers
     fn send_prepare(&mut self, prepare: &Prepare) {
         let peers = self.config.peers();
         for peer in peers.into_iter() {
-            self.downstream_sink
-                .unbounded_send(MultiPaxosMessage::Prepare(
-                    self.instance,
-                    Prepare(peer, prepare.1),
-                ))
-                .unwrap();
+            self.send_multipaxos(MultiPaxosMessage::Prepare(
+                self.instance,
+                Prepare(peer, prepare.1),
+            ));
         }
     }
 
@@ -100,12 +112,10 @@ impl<R: ReplicatedState> MultiPaxos<R> {
     fn send_accept(&mut self, accept: &Accept) {
         let peers = self.config.peers();
         for peer in peers.into_iter() {
-            self.downstream_sink
-                .unbounded_send(MultiPaxosMessage::Accept(
-                    self.instance,
-                    Accept(peer, accept.1, accept.2.clone()),
-                ))
-                .unwrap();
+            self.send_multipaxos(MultiPaxosMessage::Accept(
+                self.instance,
+                Accept(peer, accept.1, accept.2.clone()),
+            ));
         }
     }
 
@@ -113,16 +123,13 @@ impl<R: ReplicatedState> MultiPaxos<R> {
     fn send_accepted(&mut self, accepted: &Accepted) {
         let peers = self.config.peers();
         for peer in peers.into_iter() {
-            self.downstream_sink
-                .unbounded_send(MultiPaxosMessage::Accepted(
-                    self.instance,
-                    Accepted(peer, accepted.1, accepted.2.clone()),
-                ))
-                .unwrap();
+            self.send_multipaxos(MultiPaxosMessage::Accepted(
+                self.instance,
+                Accepted(peer, accepted.1, accepted.2.clone()),
+            ));
         }
     }
 
-    #[allow(dead_code)]
     fn propose_update(&mut self, value: Value) {
         match self.paxos.propose_value(value) {
             Some(ProposerMsg::Prepare(prepare)) => {
@@ -184,9 +191,7 @@ impl<R: ReplicatedState> MultiPaxos<R> {
     fn poll_syncronization(&mut self) {
         if let Some(node) = self.config.random_peer() {
             debug!("Sending SYNC request");
-            self.downstream_sink
-                .unbounded_send(MultiPaxosMessage::Sync(node, self.instance))
-                .unwrap();
+            self.send_multipaxos(MultiPaxosMessage::Sync(node, self.instance));
         }
     }
 
@@ -205,14 +210,10 @@ impl<R: ReplicatedState> MultiPaxos<R> {
                     accepted: promise.2.clone(),
                 });
 
-                self.downstream_sink
-                    .unbounded_send(MultiPaxosMessage::Promise(self.instance, promise))
-                    .unwrap();
+                self.send_multipaxos(MultiPaxosMessage::Promise(self.instance, promise));
             }
             Err(reject) => {
-                self.downstream_sink
-                    .unbounded_send(MultiPaxosMessage::Reject(self.instance, reject))
-                    .unwrap();
+                self.send_multipaxos(MultiPaxosMessage::Reject(self.instance, reject));
             }
         }
     }
@@ -261,9 +262,7 @@ impl<R: ReplicatedState> MultiPaxos<R> {
                 self.send_accepted(&accepted);
             }
             Err(reject) => {
-                self.downstream_sink
-                    .unbounded_send(MultiPaxosMessage::Reject(self.instance, reject))
-                    .unwrap();
+                self.send_multipaxos(MultiPaxosMessage::Reject(self.instance, reject));
             }
         }
     }
@@ -296,9 +295,7 @@ impl<R: ReplicatedState> MultiPaxos<R> {
         // The catchup will send the current instance (which may be in-flight)
         // and the value from the last instance.
         if let Some(v) = self.state_machine.snapshot(self.instance - 1) {
-            self.downstream_sink
-                .unbounded_send(MultiPaxosMessage::Catchup(peer, self.instance, v))
-                .unwrap();
+            self.send_multipaxos(MultiPaxosMessage::Catchup(peer, self.instance, v));
         }
     }
 
@@ -312,32 +309,47 @@ impl<R: ReplicatedState> MultiPaxos<R> {
 }
 
 impl<R: ReplicatedState> Sink for MultiPaxos<R> {
-    type SinkItem = MultiPaxosMessage;
+    type SinkItem = Message;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, msg: MultiPaxosMessage) -> StartSend<MultiPaxosMessage, io::Error> {
+    fn start_send(&mut self, msg: Message) -> StartSend<Message, io::Error> {
         match msg {
-            MultiPaxosMessage::Prepare(inst, prepare) => {
+            Message::MultiPaxos(MultiPaxosMessage::Prepare(inst, prepare)) => {
                 self.on_prepare(inst, prepare);
             }
-            MultiPaxosMessage::Promise(inst, promise) => {
+            Message::MultiPaxos(MultiPaxosMessage::Promise(inst, promise)) => {
                 self.on_promise(inst, promise);
             }
-            MultiPaxosMessage::Accept(inst, accept) => {
+            Message::MultiPaxos(MultiPaxosMessage::Accept(inst, accept)) => {
                 self.on_accept(inst, accept);
             }
-            MultiPaxosMessage::Accepted(inst, accepted) => {
+            Message::MultiPaxos(MultiPaxosMessage::Accepted(inst, accepted)) => {
                 self.on_accepted(inst, accepted);
             }
-            MultiPaxosMessage::Reject(inst, reject) => {
+            Message::MultiPaxos(MultiPaxosMessage::Reject(inst, reject)) => {
                 self.on_reject(inst, reject);
             }
-            MultiPaxosMessage::Sync(peer, inst) => {
+            Message::MultiPaxos(MultiPaxosMessage::Sync(peer, inst)) => {
                 self.on_sync(peer, inst);
             }
-            MultiPaxosMessage::Catchup(_peer, inst, value) => {
+            Message::MultiPaxos(MultiPaxosMessage::Catchup(_peer, inst, value)) => {
                 self.on_catchup(inst, value);
             }
+            Message::Client(ClientMessage::ProposeRequest(_addr, value)) => {
+                self.propose_update(value);
+            }
+            Message::Client(ClientMessage::LookupValueRequest(addr)) => {
+                let inst = self.instance;
+                match self.state_machine.snapshot(inst) {
+                    Some(v) => {
+                        self.send_client(ClientMessage::CurrentValueResponse(addr, v));
+                    }
+                    None => {
+                        self.send_client(ClientMessage::NoValueResponse(addr));
+                    }
+                }
+            }
+            Message::Client(_) => {}
         }
 
         Ok(AsyncSink::Ready)
@@ -349,9 +361,9 @@ impl<R: ReplicatedState> Sink for MultiPaxos<R> {
 }
 
 impl<R: ReplicatedState> Stream for MultiPaxos<R> {
-    type Item = MultiPaxosMessage;
+    type Item = Message;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Option<MultiPaxosMessage>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<Message>, io::Error> {
         self.downstream_stream
             .poll()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "Unexpected error"))

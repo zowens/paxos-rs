@@ -57,3 +57,26 @@ struct PaxosMessage {
         catchup  @7 :Catchup;
     }
 }
+
+struct ClientMessage {
+    struct ProposeValue {
+        value @0 :Data;
+    }
+
+    struct LookupValue {
+    }
+
+    struct CurrentValue {
+        value @0 :Data;
+    }
+
+    struct NoCurrentValue {
+    }
+
+    union {
+        proposeValueRequest @0 :ProposeValue;
+        lookupValueRequest @1 :LookupValue;
+        currentValueResponse @2 :CurrentValue;
+        noCurrentValueResponse @3 :NoCurrentValue;
+    }
+}

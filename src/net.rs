@@ -3,13 +3,13 @@ use std::io;
 use std::fmt;
 use tokio_core::net::{UdpCodec, UdpFramed, UdpSocket};
 use tokio_core::reactor::{Core, Handle};
-use futures::{Async, Future, Poll, Sink, Stream};
+use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
 use config::Configuration;
-use messages::MultiPaxosMessage;
+use messages::{ClientMessage, Message, MultiPaxosMessage};
 
-struct Codec(Configuration);
+struct MultiPaxosCodec(Configuration);
 
-impl UdpCodec for Codec {
+impl UdpCodec for MultiPaxosCodec {
     type In = Option<MultiPaxosMessage>;
     type Out = MultiPaxosMessage;
 
@@ -42,40 +42,83 @@ impl UdpCodec for Codec {
     }
 }
 
+#[derive(Default)]
+struct ClientCodec;
+
+impl UdpCodec for ClientCodec {
+    type In = Option<ClientMessage>;
+    type Out = ClientMessage;
+
+    fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<ClientMessage>> {
+        Ok(ClientMessage::deserialize(addr.clone(), buf)
+            .map_err(|e| error!("Error deserializing message {:?}", e))
+            .ok()
+            .filter(|v| match *v {
+                ClientMessage::ProposeRequest(..) => true,
+                _ => {
+                    warn!("Ignoring non-request message");
+                    false
+                }
+            }))
+    }
+
+    fn encode(&mut self, msg: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
+        msg.serialize(into).unwrap()
+    }
+}
+
+
 pub struct UdpServer {
     core: Core,
-    framed: UdpFramed<Codec>,
+    framed: UdpFramed<MultiPaxosCodec>,
+    client_framed: UdpFramed<ClientCodec>,
 }
 
 impl UdpServer {
-    pub fn new(config: Configuration) -> io::Result<UdpServer> {
+    pub fn new(config: Configuration, client_addr: &SocketAddr) -> io::Result<UdpServer> {
         let core = Core::new()?;
         let handle = core.handle();
 
         let framed =
-            UdpSocket::bind(config.current_address(), &handle)?.framed(Codec(config.clone()));
+            UdpSocket::bind(config.current_address(), &handle)?.framed(MultiPaxosCodec(config));
 
+        let client_framed = UdpSocket::bind(client_addr, &handle)?.framed(ClientCodec);
 
-        Ok(UdpServer { core, framed })
+        Ok(UdpServer {
+            core,
+            framed,
+            client_framed,
+        })
     }
 
     pub fn handle(&self) -> Handle {
         self.core.handle()
     }
 
-
     pub fn run<S: 'static>(mut self, upstream: S) -> Result<(), ()>
     where
-        S: Stream<Item = MultiPaxosMessage, Error = io::Error>,
-        S: Sink<SinkItem = MultiPaxosMessage, SinkError = io::Error>,
+        S: Stream<Item = Message, Error = io::Error>,
+        S: Sink<SinkItem = Message, SinkError = io::Error>,
     {
         let (sink, stream) = upstream.split();
-        let (out_sink, recv_stream) = self.framed.split();
-        self.core
-            .handle()
-            .spawn(EmptyFuture(stream.forward(out_sink)));
-        self.core
-            .run(EmptyFuture(recv_stream.filter_map(|v| v).forward(sink)))
+
+        let (paxos_sink, paxos_recv_stream) = self.framed.split();
+        let (client_sink, client_recv_stream) = self.client_framed.split();
+
+        let paxos_recv_stream = paxos_recv_stream.filter_map(|v| v.map(|m| Message::MultiPaxos(m)));
+        let client_recv_stream = client_recv_stream.filter_map(|m| m.map(|m| Message::Client(m)));
+
+        // send replies from upstream to the network
+        self.core.handle().spawn(EmptyFuture(ForwardMessage::new(
+            stream,
+            paxos_sink,
+            client_sink,
+        )));
+
+        // receive messages from network to upstream
+        self.core.run(EmptyFuture(
+            paxos_recv_stream.select(client_recv_stream).forward(sink),
+        ))
     }
 }
 
@@ -96,6 +139,103 @@ where
             Err(e) => {
                 error!("{}", e);
                 Err(())
+            }
+        }
+    }
+}
+
+struct ForwardMessage<S, P, C> {
+    stream: S,
+
+    paxos_sink: P,
+    client_sink: C,
+
+    paxos_poll_complete: bool,
+    client_poll_complete: bool,
+
+    buffered: Option<Message>,
+}
+
+impl<S, P, C> ForwardMessage<S, P, C>
+where
+    S: Stream<Item = Message, Error = io::Error>,
+    P: Sink<SinkItem = MultiPaxosMessage, SinkError = io::Error>,
+    C: Sink<SinkItem = ClientMessage, SinkError = io::Error>,
+{
+    fn new(stream: S, paxos_sink: P, client_sink: C) -> ForwardMessage<S, P, C> {
+        ForwardMessage {
+            stream,
+            paxos_sink,
+            client_sink,
+            paxos_poll_complete: false,
+            client_poll_complete: false,
+            buffered: None,
+        }
+    }
+
+    fn try_start_send(&mut self, item: Message) -> Poll<(), io::Error> {
+        match item {
+            Message::MultiPaxos(m) => {
+                if let AsyncSink::NotReady(item) = self.paxos_sink.start_send(m)? {
+                    self.buffered = Some(Message::MultiPaxos(item));
+                    return Ok(Async::NotReady);
+                } else {
+                    self.paxos_poll_complete = true;
+                }
+            }
+            Message::Client(m) => {
+                if let AsyncSink::NotReady(item) = self.client_sink.start_send(m)? {
+                    self.buffered = Some(Message::Client(item));
+                    return Ok(Async::NotReady);
+                } else {
+                    self.client_poll_complete = true;
+                }
+            }
+        }
+        Ok(Async::Ready(()))
+    }
+
+    fn try_poll_complete(&mut self) -> Poll<(), io::Error> {
+        if self.paxos_poll_complete {
+            try_ready!(self.paxos_sink.poll_complete());
+            self.paxos_poll_complete = false;
+        }
+        if self.client_poll_complete {
+            try_ready!(self.client_sink.poll_complete());
+            self.client_poll_complete = false;
+        }
+        Ok(Async::Ready(()))
+    }
+}
+
+impl<S, P, C> Future for ForwardMessage<S, P, C>
+where
+    S: Stream<Item = Message, Error = io::Error>,
+    P: Sink<SinkItem = MultiPaxosMessage, SinkError = io::Error>,
+    C: Sink<SinkItem = ClientMessage, SinkError = io::Error>,
+{
+    type Item = ();
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<(), io::Error> {
+        // If we've got an item buffered already, we need to write it to the
+        // sink before we can do anything else
+        if let Some(item) = self.buffered.take() {
+            try_ready!(self.try_start_send(item))
+        }
+
+        loop {
+            match self.stream.poll()? {
+                Async::Ready(Some(item)) => try_ready!(self.try_start_send(item)),
+                Async::Ready(None) => {
+                    try_ready!(self.paxos_sink.close());
+                    try_ready!(self.client_sink.close());
+                    return Ok(Async::Ready(()));
+                }
+                Async::NotReady => {
+                    try_ready!(self.try_poll_complete());
+                    return Ok(Async::NotReady);
+                }
             }
         }
     }
