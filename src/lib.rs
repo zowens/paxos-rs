@@ -17,6 +17,7 @@ pub mod multipaxos;
 pub mod net;
 pub mod register;
 pub mod config;
+pub mod timer;
 
 /// An instance is a "round" of Paxos. Instances are chained to
 /// form a sequence of values.

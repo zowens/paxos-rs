@@ -1,15 +1,10 @@
+use std::time::Duration;
+use futures::Stream;
 
-type TimerSink<T> = ();
+pub trait Scheduler: Clone {
+    /// Stream emitting periodic values
+    type Stream: Stream<Item = (), Error = ()>;
 
-type TimerStream<T> = ();
-
-
-pub fn interval<T>(handle: Handle, duration: Duration, value: T) -> TimerStream<T> {
-
+    /// Periodically emits a value into the stream after a delay
+    fn interval(&mut self, delay: Duration) -> Self::Stream;
 }
-
-pub fn delayed<T>(handle: Handle) -> (TimerSink<T>, TimerStream<T>) {
-
-}
-
-
