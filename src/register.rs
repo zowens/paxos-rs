@@ -9,7 +9,8 @@ pub struct Register {
 }
 
 impl ReplicatedState for Register {
-    fn apply_value(&mut self, _instance: Instance, value: Value) {
+    fn apply_value(&mut self, instance: Instance, value: Value) {
+        info!("[RESOLUTION] with value at instance {}: {:?}", instance, value);
         self.value = Some(value);
     }
 
