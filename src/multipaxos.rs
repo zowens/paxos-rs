@@ -34,14 +34,13 @@ pub trait ReplicatedState {
 }
 
 /// `MultiPaxos` receives messages and attempts to receive consensus on a replicated
-/// value. `ReplicatedState` is the state machine the applies a value.
+/// value. Multiple instances of the paxos algorithm are chained together.
+///
+/// `ReplicatedState` is applied at each instance transition.
 ///
 /// `ClientMessage` proposals start the process of replicating the value with
 /// consensus from a majority. The `MultiPaxosMessage` values are sent out according
 /// to the Paxos protocol to the other peers in the cluster.
-///
-/// `MultiPaxos` chains "instances" of the Paxos together such that multiple values
-/// are ordered by the monotonic `Instance` value.
 ///
 /// `MultiPaxos` is both a `futures::Stream` and `futures::Sink`. It takes in messages
 /// and produces messages for other actors within the system. The algorithm itself
@@ -66,7 +65,7 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler> {
 
 impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// Creates a new multi-paxos machine
-    pub fn new(mut state_machine: R, config: Configuration, mut scheduler: S) -> MultiPaxos<R, S> {
+    pub fn new(mut state_machine: R, mut scheduler: S, config: Configuration) -> MultiPaxos<R, S> {
         let mut state_handler = StateHandler::new();
 
         let state = state_handler.load().unwrap_or_default();
@@ -412,14 +411,11 @@ impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
 }
 
 #[inline]
-fn from_poll<V>(s: Poll<Option<V>, ()>) -> io::Result<Option<V>> {
+fn from_poll<V>(s: Poll<Option<V>, io::Error>) -> io::Result<Option<V>> {
     match s {
         Ok(Async::Ready(Some(v))) => Ok(Some(v)),
         Ok(Async::Ready(None)) | Ok(Async::NotReady) => Ok(None),
-        Err(_) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            "unexpected timer error",
-        )),
+        Err(e) => Err(e),
     }
 }
 
@@ -490,9 +486,9 @@ where
 
 impl<S: Scheduler> Stream for RetransmitTimer<S> {
     type Item = (Instance, ProposerMsg);
-    type Error = ();
+    type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<(Instance, ProposerMsg)>, ()> {
+    fn poll(&mut self) -> Poll<Option<(Instance, ProposerMsg)>, io::Error> {
         match self.msg.as_mut() {
             Some(&mut (inst, ref msg, ref mut f)) => match f.poll()? {
                 Async::Ready(Some(())) => Ok(Async::Ready(Some((inst, msg.clone())))),
@@ -567,9 +563,9 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
 
 impl<S: Scheduler> Stream for InstanceResolutionTimer<S> {
     type Item = Instance;
-    type Error = ();
+    type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<Instance>, ()> {
+    fn poll(&mut self) -> Poll<Option<Instance>, io::Error> {
         match self.stream.as_mut() {
             Some(&mut (inst, ref mut f)) => match f.poll()? {
                 Async::Ready(Some(())) => Ok(Async::Ready(Some(inst))),

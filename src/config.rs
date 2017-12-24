@@ -100,7 +100,7 @@ impl Configuration {
     }
 }
 
-/// `IntoIterator` for peers
+/// `IntoIterator` for peer node identifiers
 pub struct PeerIntoIter<'a> {
     r: Ref<'a, Inner>,
 }
@@ -116,7 +116,7 @@ impl<'a, 'b: 'a> IntoIterator for &'b PeerIntoIter<'a> {
     }
 }
 
-/// Iterator for the peers
+/// `Iterator` for the peer node identifiers
 pub struct PeerIter<'a> {
     iter: hash_map::Keys<'a, NodeId, SocketAddr>,
 }

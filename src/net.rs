@@ -65,7 +65,7 @@ impl UdpCodec for ClientCodec {
     }
 }
 
-
+/// Server that runs multi-paxos.
 pub struct UdpServer {
     core: Core,
     framed: UdpFramed<MultiPaxosCodec>,

@@ -6,6 +6,7 @@ extern crate assert_matches;
 extern crate capnp;
 #[macro_use]
 extern crate futures;
+extern crate futures_timer;
 #[macro_use]
 extern crate log;
 extern crate rand;
@@ -14,16 +15,24 @@ extern crate tokio_core;
 mod algo;
 mod state;
 pub mod messages;
-pub mod multipaxos;
-pub mod net;
-pub mod register;
-pub mod config;
-pub mod timer;
+mod multipaxos;
+mod net;
+mod register;
+mod config;
+mod timer;
 
-/// An instance is a "round" of Paxos. Instances are chained to
-/// form a sequence of values.
+pub use multipaxos::{MultiPaxos, ReplicatedState};
+pub use net::UdpServer;
+pub use register::Register;
+pub use config::{Configuration, PeerIter, PeerIntoIter};
+pub use timer::{Scheduler, FuturesScheduler};
+pub use algo::NodeId;
+
+/// An instance is a _round_ of the Paxos algorithm. Instances are chained to
+/// form a sequence of values. Once an instance receives consensus, the next
+/// instance is started.
 ///
-/// In some implementations, this is also called a "Slot"
+/// In some implementations, this is also called a _slot_.
 pub type Instance = u64;
 
 #[allow(dead_code, clippy)]

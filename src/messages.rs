@@ -2,7 +2,8 @@ use std::io;
 use std::net::SocketAddr;
 
 use super::Instance;
-use algo::{Accept, Accepted, Ballot, NodeId, Prepare, Promise, Reject, Value};
+pub use algo::{Accept, Accepted, Ballot, Prepare, Promise, Reject, Value};
+use algo::NodeId;
 
 use capnp::{Error as CapnpError, NotInSchema};
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
@@ -10,17 +11,41 @@ use capnp::serialize_packed::{read_message, write_message};
 use messages_capnp;
 
 #[derive(Clone, Debug)]
+/// Message generated within the cluster.
 pub enum MultiPaxosMessage {
+    /// `PREPARE` message is the Phase 1a message from a proposer sent
+    /// to acceptors to receive agreement to not accept ballots of lower value.
     Prepare(Instance, Prepare),
+
+    /// `PROMISE` is the Phase 1b message sent from acceptors in reply to
+    /// `PREPARE` messages. The ballot in the promise denotes that the acceptor
+    /// will not accept ballots less than the promised ballot.
     Promise(Instance, Promise),
+
+    /// `ACCEPT` message is the Phase 2a message from a proposer sent
+    /// to acceptors to accept a value. The `ACCEPT` message is predicated
+    /// on the proposer receiving quorum from Phase 1.
     Accept(Instance, Accept),
+
+    /// `ACCEPTED` is the Phase 2b message that is broadcast from acceptors
+    /// denoting acceptance of a value.
     Accepted(Instance, Accepted),
+
+    /// `REJECT` is sent from an acceptor in reply to a proposer
+    /// when a ballot is being proposed or seen in an `ACCEPT` message that
+    /// preceeds the last promised value from the acceptor.
     Reject(Instance, Reject),
+
+    /// Request sent to a random node to get the latest value
+    /// if the instance known to the node is behind.
     Sync(NodeId, Instance),
+
+    /// Response to a sync request from another peer
     Catchup(NodeId, Instance, Value),
 }
 
 #[derive(Debug)]
+/// Error encountered during deserialization
 pub enum DeserializeError {
     Capnp(CapnpError),
     CapnpNotInSchema(NotInSchema),
@@ -232,6 +257,7 @@ impl MultiPaxosMessage {
     }
 }
 
+/// Message received from clients.
 #[derive(Clone, Debug)]
 pub enum ClientMessage {
     /// Proposes new value
@@ -311,7 +337,7 @@ impl ClientMessage {
     }
 }
 
-/// Message handled by `MultiPaxos`
+/// Either type for `MultiPaxosMessage` and `ClientMessage`
 pub enum Message {
     /// Message sent within the cluster
     MultiPaxos(MultiPaxosMessage),

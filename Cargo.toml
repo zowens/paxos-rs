@@ -11,6 +11,7 @@ tokio-core = "0.1.11"
 futures = "0.1.17"
 env_logger = "0.4.3"
 capnp = "0.8.13"
+futures-timer = { git = "https://github.com/alexcrichton/futures-timer.git" }
 
 [dev-dependencies]
 assert_matches = "1.1.0"
