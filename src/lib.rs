@@ -22,10 +22,10 @@ mod config;
 mod timer;
 
 pub use multipaxos::{MultiPaxos, ReplicatedState};
-pub use net::UdpServer;
+pub use net::{UdpClient, UdpServer};
 pub use register::Register;
-pub use config::{Configuration, PeerIter, PeerIntoIter};
-pub use timer::{Scheduler, FuturesScheduler};
+pub use config::{Configuration, PeerIntoIter, PeerIter};
+pub use timer::{FuturesScheduler, Scheduler};
 pub use algo::NodeId;
 
 /// An instance is a _round_ of the Paxos algorithm. Instances are chained to

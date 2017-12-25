@@ -3,7 +3,7 @@ use std::io;
 use std::fmt;
 use tokio_core::net::{UdpCodec, UdpFramed, UdpSocket};
 use tokio_core::reactor::{Core, Handle};
-use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
+use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use config::Configuration;
 use messages::{ClientMessage, Message, MultiPaxosMessage};
 
@@ -41,9 +41,9 @@ impl UdpCodec for MultiPaxosCodec {
 }
 
 #[derive(Default)]
-struct ClientCodec;
+struct ClientMessageCodec;
 
-impl UdpCodec for ClientCodec {
+impl UdpCodec for ClientMessageCodec {
     type In = Option<ClientMessage>;
     type Out = ClientMessage;
 
@@ -53,6 +53,7 @@ impl UdpCodec for ClientCodec {
             .ok()
             .filter(|v| match *v {
                 ClientMessage::ProposeRequest(..) => true,
+                ClientMessage::LookupValueRequest(..) => true,
                 _ => {
                     warn!("Ignoring non-request message");
                     false
@@ -65,11 +66,64 @@ impl UdpCodec for ClientCodec {
     }
 }
 
+#[derive(Default)]
+struct ClientCodec;
+
+impl UdpCodec for ClientCodec {
+    type In = ClientMessage;
+    type Out = ClientMessage;
+
+    fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<ClientMessage> {
+        ClientMessage::deserialize(*addr, buf).map_err(|e| {
+            error!("Error deserializing message {:?}", e);
+            e.into()
+        })
+    }
+
+    fn encode(&mut self, msg: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
+        msg.serialize(into).unwrap()
+    }
+}
+
+pub struct UdpClient {
+    client_framed: UdpFramed<ClientCodec>,
+}
+
+impl UdpClient {
+    pub fn new(addr: &SocketAddr, handle: &Handle) -> io::Result<UdpClient> {
+        Ok(UdpClient {
+            client_framed: UdpSocket::bind(addr, handle)?.framed(ClientCodec),
+        })
+    }
+}
+
+impl Sink for UdpClient {
+    type SinkItem = ClientMessage;
+    type SinkError = io::Error;
+
+    fn start_send(&mut self, msg: ClientMessage) -> StartSend<ClientMessage, io::Error> {
+        self.client_framed.start_send(msg)
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), io::Error> {
+        self.client_framed.poll_complete()
+    }
+}
+
+impl Stream for UdpClient {
+    type Item = ClientMessage;
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Option<ClientMessage>, io::Error> {
+        self.client_framed.poll()
+    }
+}
+
 /// Server that runs multi-paxos.
 pub struct UdpServer {
     core: Core,
     framed: UdpFramed<MultiPaxosCodec>,
-    client_framed: UdpFramed<ClientCodec>,
+    client_framed: UdpFramed<ClientMessageCodec>,
 }
 
 impl UdpServer {
@@ -80,7 +134,7 @@ impl UdpServer {
         let framed =
             UdpSocket::bind(config.current_address(), &handle)?.framed(MultiPaxosCodec(config));
 
-        let client_framed = UdpSocket::bind(client_addr, &handle)?.framed(ClientCodec);
+        let client_framed = UdpSocket::bind(client_addr, &handle)?.framed(ClientMessageCodec);
 
         Ok(UdpServer {
             core,

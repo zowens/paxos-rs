@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map;
+use std::fmt;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::cell::{Ref, RefCell};
@@ -97,6 +98,18 @@ impl Configuration {
         } else {
             self.inner.borrow().socket_to_peer.get(address).cloned()
         }
+    }
+}
+
+impl fmt::Debug for Configuration {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        let inner = self.inner.borrow();
+        fmt.debug_struct("Configuration")
+            .field("current_node_id", &self.current.0)
+            .field("current_node_address", &self.current.1)
+            .field("peers", &inner.peers)
+            .field("peers_to_socket", &inner.socket_to_peer)
+            .finish()
     }
 }
 

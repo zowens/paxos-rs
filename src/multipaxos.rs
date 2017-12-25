@@ -373,33 +373,44 @@ impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
     fn start_send(&mut self, msg: Message) -> StartSend<Message, io::Error> {
         match msg {
             Message::MultiPaxos(MultiPaxosMessage::Prepare(inst, prepare)) => {
+                debug!("Received {:?}", prepare);
                 self.on_prepare(inst, prepare);
             }
             Message::MultiPaxos(MultiPaxosMessage::Promise(inst, promise)) => {
+                debug!("Received {:?}", promise);
                 self.on_promise(inst, promise);
             }
             Message::MultiPaxos(MultiPaxosMessage::Accept(inst, accept)) => {
+                debug!("Received {:?}", accept);
                 self.on_accept(inst, accept);
             }
             Message::MultiPaxos(MultiPaxosMessage::Accepted(inst, accepted)) => {
+                debug!("Received {:?}", accepted);
                 self.on_accepted(inst, accepted);
             }
             Message::MultiPaxos(MultiPaxosMessage::Reject(inst, reject)) => {
+                debug!("Received {:?}", reject);
                 self.on_reject(inst, reject);
             }
             Message::MultiPaxos(MultiPaxosMessage::Sync(peer, inst)) => {
+                debug!("Received SYNC from {:?}", peer);
                 self.on_sync(peer, inst);
             }
-            Message::MultiPaxos(MultiPaxosMessage::Catchup(_peer, inst, value)) => {
+            Message::MultiPaxos(MultiPaxosMessage::Catchup(peer, inst, value)) => {
+                debug!("Received CATCHUP from {:?}", peer);
                 self.on_catchup(inst, value);
             }
-            Message::Client(ClientMessage::ProposeRequest(_addr, value)) => {
+            Message::Client(ClientMessage::ProposeRequest(addr, value)) => {
+                debug!("Received PROPOSE request from client {}", addr);
                 self.propose_update(value);
             }
             Message::Client(ClientMessage::LookupValueRequest(addr)) => {
+                debug!("Received GET request from client {}", addr);
                 self.on_client_lookup(addr);
             }
-            Message::Client(_) => {}
+            Message::Client(req) => {
+                warn!("Received unknown client request {:?}", req);
+            }
         }
 
         Ok(AsyncSink::Ready)

@@ -1,9 +1,9 @@
 #![feature(ip_constructors)]
 extern crate paxos;
 extern crate futures;
+extern crate env_logger;
 
 use std::net::SocketAddr;
-use std::net::IpAddr;
 use std::net::Ipv4Addr;
 
 use std::env::args;
@@ -20,13 +20,16 @@ fn local_config(node: u16) -> (Configuration, SocketAddr) {
 }
 
 pub fn main() {
+    env_logger::init().unwrap();
+
     let (config, client_addr) = match args().nth(1) {
         Some(v) => local_config(v.parse::<u16>().unwrap()),
         None => panic!("Must specific node ID (0, 1, 2) in first argument"),
     };
 
+    println!("{:?}", config);
+
     let server = UdpServer::new(config.clone(), &client_addr).unwrap();
     let multi_paxos = MultiPaxos::new(Register::default(), FuturesScheduler::default(), config);
     server.run(multi_paxos).unwrap();
 }
-

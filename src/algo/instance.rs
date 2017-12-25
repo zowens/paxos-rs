@@ -266,7 +266,7 @@ impl Acceptor {
     /// to the proposer to not accept ballots > proposal or a REJECT if a ballot has been
     /// promised with a ballot > proposal.
     fn receive_prepare(&mut self, prepare: Prepare) -> Result<Promise, Reject> {
-        let Prepare(_peer, proposal) = prepare;
+        let Prepare(peer, proposal) = prepare;
         let opposing_ballot = self.promised.filter(|b| b > &proposal);
 
         match opposing_ballot {
@@ -280,7 +280,7 @@ impl Acceptor {
                 // track the proposal as the highest promise
                 // (in order to reject ballots < proposal)
                 self.promised = Some(proposal);
-                Ok(Promise(self.current, proposal, self.accepted.clone()))
+                Ok(Promise(peer, proposal, self.accepted.clone()))
             }
         }
     }

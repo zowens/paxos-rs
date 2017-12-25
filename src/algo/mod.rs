@@ -16,11 +16,12 @@ impl Ballot {
     /// Generates a ballot that is greater than `self` for a given node.
     pub fn higher_for(&self, n: NodeId) -> Ballot {
         // slight optimization to not increase ballot numeral unnecessarily
-        if self.1 < n {
+        /*if self.1 < n {
             Ballot(self.0, n)
         } else {
             Ballot(self.0 + 1, n)
-        }
+        }*/
+        Ballot(self.0 + 1, n)
     }
 }
 
