@@ -105,6 +105,8 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         self.state_machine.apply_value(instance, value.clone());
 
         let new_inst = instance + 1;
+        self.instance = new_inst;
+
         info!("Starting instance {}", new_inst);
         self.state_handler.persist(State {
             instance: new_inst,
@@ -349,7 +351,9 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         // only accept a catchup value if it is greater than
         // the current instance known to this node
         if inst > self.instance {
-            self.advance_instance(inst, current);
+            // TODO: this call shouldn't have a random -1 without reason...
+            // probably should fix advance_instance logic
+            self.advance_instance(inst - 1, current);
         }
     }
 
@@ -393,11 +397,11 @@ impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
                 self.on_reject(inst, reject);
             }
             Message::MultiPaxos(MultiPaxosMessage::Sync(peer, inst)) => {
-                debug!("Received SYNC from {:?}", peer);
+                debug!("Received SYNC from {:?} to instance {:?}", peer, inst);
                 self.on_sync(peer, inst);
             }
             Message::MultiPaxos(MultiPaxosMessage::Catchup(peer, inst, value)) => {
-                debug!("Received CATCHUP from {:?}", peer);
+                debug!("Received CATCHUP from {:?} to instance {}", peer, inst);
                 self.on_catchup(inst, value);
             }
             Message::Client(ClientMessage::ProposeRequest(addr, value)) => {
