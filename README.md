@@ -1,15 +1,17 @@
 # Paxos Made with Rust
 
+*Development Status*: Experimental
+
 Library encapsulating the Paxos and variants (i.e. multi-paxos) in Rust, with a builtin
 server with Tokio and Futures.
-
-*Development Status*: Experimental
 
 The implementation is largely based on [a blog post by Tom Cocagne](https://understandingpaxos.wordpress.com/) and [the accompanying code](github.com/cocagne/multi-paxos-example). I
 found the explanation and code quite easy to read and understand.
 
 This project is laregly to gain an understanding and intuition for the subleties of Paxos and the
 variants that have been described in the literature.
+
+Additionally, this library will be used for the reconfiguration of the chain in my implementations of [chain replication](https://github.com/zowens/chain-replication).
 
 ## Building and Running
 
@@ -55,9 +57,10 @@ cargo build --release
     - [ ] WPaxos
 - [ ] Engineering
     - [ ] Jepsen Testing
+    - [ ] Configuration of timeouts and other internals
+    - [ ] UDP vs. TCP
     - [ ] Multi-Core Server
     - [ ] Rich client library and cli
-    - [ ] DPDK
     - [ ] RDMA
 
 ## References
