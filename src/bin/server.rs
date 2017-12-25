@@ -29,7 +29,7 @@ pub fn main() {
 
     println!("{:?}", config);
 
-    let server = UdpServer::new(config.clone(), &client_addr).unwrap();
+    let server = UdpServer::new(config.current_address(), &client_addr).unwrap();
     let multi_paxos = MultiPaxos::new(Register::default(), FuturesScheduler::default(), config);
     server.run(multi_paxos).unwrap();
 }

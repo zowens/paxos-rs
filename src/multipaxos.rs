@@ -5,6 +5,7 @@ use std::time::Duration;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use futures::task;
+use either::Either;
 use messages::*;
 use algo::*;
 use super::Instance;
@@ -16,9 +17,9 @@ use rand::{thread_rng, Rng};
 /// Starting timeout for restarting Phase 1
 const RESOLUTION_STARTING_MS: u64 = 5;
 /// Cap on the timeout for restarting Phase 1
-const RESOLUTION_MAX_MS: u64 = 2000;
+const RESOLUTION_MAX_MS: u64 = 3000;
 /// Timeout for post-ACCEPT restarting Phase 1
-const RESOLUTION_SILENCE_TIMEOUT: u64 = 3000;
+const RESOLUTION_SILENCE_TIMEOUT: u64 = 4000;
 /// Periodic synchronization time
 const SYNC_TIME_MS: u64 = 5000;
 
@@ -54,8 +55,8 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler> {
     config: Configuration,
 
     // downstream is sent out from this node
-    downstream_sink: UnboundedSender<Message>,
-    downstream_stream: UnboundedReceiver<Message>,
+    downstream_sink: UnboundedSender<NetworkMessage<Message>>,
+    downstream_stream: UnboundedReceiver<NetworkMessage<Message>>,
 
     // timers for driving resolution
     retransmit_timer: RetransmitTimer<S>,
@@ -80,7 +81,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             state_machine.apply_value(state.instance, v);
         }
 
-        let (downstream_sink, downstream_stream) = unbounded::<Message>();
+        let (downstream_sink, downstream_stream) = unbounded::<NetworkMessage<Message>>();
 
         let retransmit_timer = RetransmitTimer::new(scheduler.clone());
         let sync_timer = scheduler.interval(Duration::from_millis(SYNC_TIME_MS));
@@ -122,16 +123,27 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     #[inline]
-    fn send_multipaxos(&self, m: MultiPaxosMessage) {
-        self.downstream_sink
-            .unbounded_send(Message::MultiPaxos(m))
-            .unwrap();
+    fn send_multipaxos(&self, peer: NodeId, m: MultiPaxosMessage) {
+        match self.config.address(peer) {
+            Some(address) => {
+                self.downstream_sink
+                    .unbounded_send(NetworkMessage {
+                        address,
+                        message: Message::MultiPaxos(m),
+                    })
+                    .unwrap();
+            }
+            None => warn!("Unknown peer ID = {}", peer),
+        }
     }
 
     #[inline]
-    fn send_client(&self, m: ClientMessage) {
+    fn send_client(&self, address: SocketAddr, m: ClientMessage) {
         self.downstream_sink
-            .unbounded_send(Message::Client(m))
+            .unbounded_send(NetworkMessage {
+                address,
+                message: Message::Client(m),
+            })
             .unwrap();
     }
 
@@ -139,10 +151,10 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     fn send_prepare(&mut self, prepare: &Prepare) {
         let peers = self.config.peers();
         for peer in &peers {
-            self.send_multipaxos(MultiPaxosMessage::Prepare(
-                self.instance,
-                Prepare(peer, prepare.1),
-            ));
+            self.send_multipaxos(
+                peer,
+                MultiPaxosMessage::Prepare(self.instance, prepare.clone()),
+            );
         }
     }
 
@@ -150,10 +162,10 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     fn send_accept(&mut self, accept: &Accept) {
         let peers = self.config.peers();
         for peer in &peers {
-            self.send_multipaxos(MultiPaxosMessage::Accept(
-                self.instance,
-                Accept(peer, accept.1, accept.2.clone()),
-            ));
+            self.send_multipaxos(
+                peer,
+                MultiPaxosMessage::Accept(self.instance, accept.clone()),
+            );
         }
     }
 
@@ -161,27 +173,25 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     fn send_accepted(&mut self, accepted: &Accepted) {
         let peers = self.config.peers();
         for peer in &peers {
-            self.send_multipaxos(MultiPaxosMessage::Accepted(
-                self.instance,
-                Accepted(peer, accepted.1, accepted.2.clone()),
-            ));
+            self.send_multipaxos(
+                peer,
+                MultiPaxosMessage::Accepted(self.instance, accepted.clone()),
+            );
         }
     }
 
     fn propose_update(&mut self, value: Value) {
         let inst = self.instance;
         match self.paxos.propose_value(value) {
-            Some(ProposerMsg::Prepare(prepare)) => {
+            Some(Either::Left(prepare)) => {
                 info!("Starting Phase 1a with proposed value");
                 self.send_prepare(&prepare);
-                self.retransmit_timer
-                    .schedule(inst, ProposerMsg::Prepare(prepare));
+                self.retransmit_timer.schedule(inst, Either::Left(prepare));
             }
-            Some(ProposerMsg::Accept(accept)) => {
+            Some(Either::Right(accept)) => {
                 info!("Starting Phase 2a with proposed value");
                 self.send_accept(&accept);
-                self.retransmit_timer
-                    .schedule(inst, ProposerMsg::Accept(accept));
+                self.retransmit_timer.schedule(inst, Either::Right(accept));
             }
             None => {
                 warn!("Alrady have a value during proposal phases");
@@ -199,11 +209,11 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
         // resend prepare messages to peers
         match msg {
-            ProposerMsg::Prepare(v) => {
+            Either::Left(ref v) => {
                 debug!("Retransmitting {:?} to followers", v);
-                self.send_prepare(&v);
+                self.send_prepare(v);
             }
-            ProposerMsg::Accept(ref v) => {
+            Either::Right(ref v) => {
                 debug!("Retransmitting {:?} to followers", v);
                 self.send_accept(v);
             }
@@ -218,67 +228,71 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         }
 
         let prepare = self.paxos.prepare();
-        info!("Restarting Phase 1 with {:?}", prepare.1);
+        info!("Restarting Phase 1 with {:?}", prepare.0);
         self.send_prepare(&prepare);
         self.retransmit_timer
-            .schedule(instance, ProposerMsg::Prepare(prepare));
+            .schedule(instance, Either::Left(prepare));
     }
 
     fn poll_syncronization(&mut self) {
         if let Some(node) = self.config.random_peer() {
             debug!("Sending SYNC request");
-            self.send_multipaxos(MultiPaxosMessage::Sync(node, self.instance));
+            self.send_multipaxos(node, MultiPaxosMessage::Sync(self.instance));
         }
     }
 
-    fn on_prepare(&mut self, inst: Instance, prepare: Prepare) {
+    fn on_prepare(&mut self, peer: NodeId, inst: Instance, prepare: Prepare) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
         }
 
-        match self.paxos.receive_prepare(prepare) {
-            Ok(promise) => {
+        match self.paxos.receive_prepare(peer, prepare) {
+            Either::Left(promise) => {
                 self.state_handler.persist(State {
                     instance: self.instance,
                     current_value: self.state_machine.snapshot(inst).clone(),
-                    promised: Some(promise.1),
-                    accepted: promise.2.clone(),
+                    promised: Some(promise.message.0),
+                    accepted: promise.message.1.clone(),
                 });
 
-                self.send_multipaxos(MultiPaxosMessage::Promise(self.instance, promise));
+                self.send_multipaxos(
+                    promise.reply_to,
+                    MultiPaxosMessage::Promise(self.instance, promise.message),
+                );
             }
-            Err(reject) => {
-                self.send_multipaxos(MultiPaxosMessage::Reject(self.instance, reject));
+            Either::Right(reject) => {
+                self.send_multipaxos(
+                    reject.reply_to,
+                    MultiPaxosMessage::Reject(self.instance, reject.message),
+                );
             }
         }
     }
 
-    fn on_promise(&mut self, inst: Instance, promise: Promise) {
+    fn on_promise(&mut self, peer: NodeId, inst: Instance, promise: Promise) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
         }
 
-        if let Some(accept) = self.paxos.receive_promise(promise) {
+        if let Some(accept) = self.paxos.receive_promise(peer, promise) {
             self.send_accept(&accept);
-            self.retransmit_timer
-                .schedule(inst, ProposerMsg::Accept(accept));
+            self.retransmit_timer.schedule(inst, Either::Right(accept));
         }
     }
 
-    fn on_reject(&mut self, inst: Instance, reject: Reject) {
+    fn on_reject(&mut self, peer: NodeId, inst: Instance, reject: Reject) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
         }
 
         // go back to phase 1 when a quorum of REJECT has been received
-        let prepare = self.paxos.receive_reject(reject);
+        let prepare = self.paxos.receive_reject(peer, reject);
         if let Some(prepare) = prepare {
             self.send_prepare(&prepare);
-            self.retransmit_timer
-                .schedule(inst, ProposerMsg::Prepare(prepare));
+            self.retransmit_timer.schedule(inst, Either::Left(prepare));
         } else {
             self.retransmit_timer.reset();
         }
@@ -287,25 +301,28 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         self.prepare_timer.schedule_retry(inst);
     }
 
-    fn on_accept(&mut self, inst: Instance, accept: Accept) {
+    fn on_accept(&mut self, peer: NodeId, inst: Instance, accept: Accept) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
         }
 
-        match self.paxos.receive_accept(accept) {
-            Ok(accepted @ Accepted(..)) => {
+        match self.paxos.receive_accept(peer, accept) {
+            Either::Left(accepted) => {
                 self.state_handler.persist(State {
                     instance: self.instance,
                     current_value: self.state_machine.snapshot(inst).clone(),
-                    promised: Some(accepted.1),
-                    accepted: Some((accepted.1, accepted.2.clone())),
+                    promised: Some(accepted.0),
+                    accepted: Some((accepted.0, accepted.1.clone())),
                 });
 
                 self.send_accepted(&accepted);
             }
-            Err(reject) => {
-                self.send_multipaxos(MultiPaxosMessage::Reject(self.instance, reject));
+            Either::Right(reject) => {
+                self.send_multipaxos(
+                    reject.reply_to,
+                    MultiPaxosMessage::Reject(self.instance, reject.message),
+                );
             }
         }
 
@@ -315,16 +332,16 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         self.prepare_timer.schedule_timeout(inst);
     }
 
-    fn on_accepted(&mut self, inst: Instance, accepted: Accepted) {
+    fn on_accepted(&mut self, peer: NodeId, inst: Instance, accepted: Accepted) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
         }
 
-        let resol = self.paxos.receive_accepted(accepted);
+        let resol = self.paxos.receive_accepted(peer, accepted);
 
         // if there is quorum, we can advance to the next instance
-        if let Some(Resolution(_, _, value)) = resol {
+        if let Some(Resolution(_, value)) = resol {
             self.advance_instance(inst, value);
         }
     }
@@ -343,7 +360,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         // The catchup will send the current instance (which may be in-flight)
         // and the value from the last instance.
         if let Some(v) = self.state_machine.snapshot(self.instance - 1) {
-            self.send_multipaxos(MultiPaxosMessage::Catchup(peer, self.instance, v));
+            self.send_multipaxos(peer, MultiPaxosMessage::Catchup(self.instance, v));
         }
     }
 
@@ -361,60 +378,83 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         let inst = self.instance;
         match self.state_machine.snapshot(inst) {
             Some(v) => {
-                self.send_client(ClientMessage::CurrentValueResponse(addr, v));
+                self.send_client(addr, ClientMessage::CurrentValueResponse(v));
             }
             None => {
-                self.send_client(ClientMessage::NoValueResponse(addr));
+                self.send_client(addr, ClientMessage::NoValueResponse);
             }
         }
     }
 }
 
 impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
-    type SinkItem = Message;
+    type SinkItem = NetworkMessage<Message>;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, msg: Message) -> StartSend<Message, io::Error> {
+    fn start_send(
+        &mut self,
+        msg: NetworkMessage<Message>,
+    ) -> StartSend<NetworkMessage<Message>, io::Error> {
         match msg {
-            Message::MultiPaxos(MultiPaxosMessage::Prepare(inst, prepare)) => {
-                debug!("Received {:?}", prepare);
-                self.on_prepare(inst, prepare);
+            NetworkMessage {
+                address,
+                message: Message::MultiPaxos(msg),
+            } => {
+                let peer = match self.config.peer_id(&address) {
+                    Some(v) => v,
+                    None => {
+                        warn!(
+                            "Received message from address, but is not in configuration: {}",
+                            address
+                        );
+                        return Ok(AsyncSink::Ready);
+                    }
+                };
+                debug!("Received message from peer {}: {:?}", peer, msg);
+                match msg {
+                    MultiPaxosMessage::Prepare(inst, prepare) => {
+                        self.on_prepare(peer, inst, prepare);
+                    }
+                    MultiPaxosMessage::Promise(inst, promise) => {
+                        self.on_promise(peer, inst, promise);
+                    }
+                    MultiPaxosMessage::Accept(inst, accept) => {
+                        self.on_accept(peer, inst, accept);
+                    }
+                    MultiPaxosMessage::Accepted(inst, accepted) => {
+                        self.on_accepted(peer, inst, accepted);
+                    }
+                    MultiPaxosMessage::Reject(inst, reject) => {
+                        self.on_reject(peer, inst, reject);
+                    }
+                    MultiPaxosMessage::Sync(inst) => {
+                        self.on_sync(peer, inst);
+                    }
+                    MultiPaxosMessage::Catchup(inst, value) => {
+                        self.on_catchup(inst, value);
+                    }
+                }
             }
-            Message::MultiPaxos(MultiPaxosMessage::Promise(inst, promise)) => {
-                debug!("Received {:?}", promise);
-                self.on_promise(inst, promise);
-            }
-            Message::MultiPaxos(MultiPaxosMessage::Accept(inst, accept)) => {
-                debug!("Received {:?}", accept);
-                self.on_accept(inst, accept);
-            }
-            Message::MultiPaxos(MultiPaxosMessage::Accepted(inst, accepted)) => {
-                debug!("Received {:?}", accepted);
-                self.on_accepted(inst, accepted);
-            }
-            Message::MultiPaxos(MultiPaxosMessage::Reject(inst, reject)) => {
-                debug!("Received {:?}", reject);
-                self.on_reject(inst, reject);
-            }
-            Message::MultiPaxos(MultiPaxosMessage::Sync(peer, inst)) => {
-                debug!("Received SYNC from {:?} to instance {:?}", peer, inst);
-                self.on_sync(peer, inst);
-            }
-            Message::MultiPaxos(MultiPaxosMessage::Catchup(peer, inst, value)) => {
-                debug!("Received CATCHUP from {:?} to instance {}", peer, inst);
-                self.on_catchup(inst, value);
-            }
-            Message::Client(ClientMessage::ProposeRequest(addr, value)) => {
-                debug!("Received PROPOSE request from client {}", addr);
-                self.propose_update(value);
-            }
-            Message::Client(ClientMessage::LookupValueRequest(addr)) => {
-                debug!("Received GET request from client {}", addr);
-                self.on_client_lookup(addr);
-            }
-            Message::Client(req) => {
-                warn!("Received unknown client request {:?}", req);
-            }
+            NetworkMessage {
+                address,
+                message: Message::Client(msg),
+            } => match msg {
+                ClientMessage::ProposeRequest(value) => {
+                    debug!("Received PROPOSE request from client {}", address);
+                    self.propose_update(value);
+                }
+                ClientMessage::LookupValueRequest => {
+                    debug!("Received GET request from client {}", address);
+                    self.on_client_lookup(address);
+                }
+                req => {
+                    warn!(
+                        "Received unknown client request from address {}, {:?}",
+                        address,
+                        req
+                    );
+                }
+            },
         }
 
         Ok(AsyncSink::Ready)
@@ -435,9 +475,9 @@ fn from_poll<V>(s: Poll<Option<V>, io::Error>) -> io::Result<Option<V>> {
 }
 
 impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
-    type Item = Message;
+    type Item = NetworkMessage<Message>;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Option<Message>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<NetworkMessage<Message>>, io::Error> {
         // poll for retransmission
         if let Some((inst, msg)) = from_poll(self.retransmit_timer.poll())? {
             self.poll_retransmit(inst, msg);
@@ -557,7 +597,7 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
     pub fn schedule_retry(&mut self, inst: Instance) {
         self.backoff_ms = min(self.backoff_ms * 2, RESOLUTION_MAX_MS);
 
-        let jitter_retry_ms = thread_rng().gen_range(0, self.backoff_ms + 1);
+        let jitter_retry_ms = thread_rng().gen_range(RESOLUTION_STARTING_MS, self.backoff_ms + 1);
         self.stream = Some((
             inst,
             self.scheduler

@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use clap::{App, Arg, SubCommand};
 use futures::{Future, Stream, Sink};
 use paxos::UdpClient;
-use paxos::messages::ClientMessage;
+use paxos::messages::{ClientMessage, NetworkMessage};
 use tokio_core::reactor::Core;
 
 fn main() {
@@ -43,14 +43,14 @@ fn main() {
     match matches.subcommand() {
         ("propose", Some(args)) => {
             let value = args.value_of("VALUE").unwrap();
-            let msg = ClientMessage::ProposeRequest(server_addr, value.as_bytes().to_vec());
+            let msg = NetworkMessage { address: server_addr, message: ClientMessage::ProposeRequest(value.as_bytes().to_vec()) };
             core.run(sink.send(msg).map(|_| ()).map_err(|_| ())).unwrap();
         },
-        ("get", Some(args)) => {
-            let msg = ClientMessage::LookupValueRequest(server_addr);
+        ("get", Some(_args)) => {
+            let msg = NetworkMessage { address: server_addr, message: ClientMessage::LookupValueRequest };
             core.run(sink.send(msg).and_then(|_| {
                 stream.take(1).for_each(move |msg| {
-                    println!("recv {:?}", msg);
+                    println!("recv {:?}", msg.message);
                     Ok(())
                 })
             }).map_err(|_| ())).unwrap();

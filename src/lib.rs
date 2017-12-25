@@ -4,6 +4,7 @@
 #[macro_use]
 extern crate assert_matches;
 extern crate capnp;
+extern crate either;
 #[macro_use]
 extern crate futures;
 extern crate futures_timer;

@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 
 use super::Instance;
 pub use algo::{Accept, Accepted, Ballot, Prepare, Promise, Reject, Value};
-use algo::NodeId;
 
 use capnp::{Error as CapnpError, NotInSchema};
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
@@ -38,10 +37,10 @@ pub enum MultiPaxosMessage {
 
     /// Request sent to a random node to get the latest value
     /// if the instance known to the node is behind.
-    Sync(NodeId, Instance),
+    Sync(Instance),
 
     /// Response to a sync request from another peer
-    Catchup(NodeId, Instance, Value),
+    Catchup(Instance, Value),
 }
 
 #[derive(Debug)]
@@ -82,7 +81,7 @@ fn deserialize_ballot(reader: messages_capnp::ballot::Reader) -> Ballot {
 }
 
 impl MultiPaxosMessage {
-    pub fn deserialize(peer: NodeId, buf: &[u8]) -> Result<MultiPaxosMessage, DeserializeError> {
+    pub fn deserialize(buf: &[u8]) -> Result<MultiPaxosMessage, DeserializeError> {
         let mut cursor = io::Cursor::new(buf);
         let reader = read_message(&mut cursor, ReaderOptions::new())?;
 
@@ -94,7 +93,7 @@ impl MultiPaxosMessage {
             WhichMsg::Prepare(prepare) => {
                 let prepare = prepare?;
                 let proposal = deserialize_ballot(prepare.get_proposal()?);
-                Ok(MultiPaxosMessage::Prepare(inst, Prepare(peer, proposal)))
+                Ok(MultiPaxosMessage::Prepare(inst, Prepare(proposal)))
             }
             WhichMsg::Promise(promise) => {
                 let promise = promise?;
@@ -115,7 +114,7 @@ impl MultiPaxosMessage {
 
                 Ok(MultiPaxosMessage::Promise(
                     inst,
-                    Promise(peer, proposal, last_accepted),
+                    Promise(proposal, last_accepted),
                 ))
             }
             WhichMsg::Accept(accept) => {
@@ -124,7 +123,7 @@ impl MultiPaxosMessage {
                 let value = accept.get_value()?;
                 Ok(MultiPaxosMessage::Accept(
                     inst,
-                    Accept(peer, proposal, value.to_vec()),
+                    Accept(proposal, value.to_vec()),
                 ))
             }
             WhichMsg::Accepted(accepted) => {
@@ -133,39 +132,24 @@ impl MultiPaxosMessage {
                 let value = accepted.get_value()?;
                 Ok(MultiPaxosMessage::Accepted(
                     inst,
-                    Accepted(peer, proposal, value.to_vec()),
+                    Accepted(proposal, value.to_vec()),
                 ))
             }
             WhichMsg::Reject(reject) => {
                 let reject = reject?;
                 let proposal = { deserialize_ballot(reject.borrow().get_proposal()?) };
                 let promised = { deserialize_ballot(reject.borrow().get_promised()?) };
-                Ok(MultiPaxosMessage::Reject(
-                    inst,
-                    Reject(peer, proposal, promised),
-                ))
+                Ok(MultiPaxosMessage::Reject(inst, Reject(proposal, promised)))
             }
             WhichMsg::Sync(sync_req) => {
                 let _ = sync_req?;
-                Ok(MultiPaxosMessage::Sync(peer, inst))
+                Ok(MultiPaxosMessage::Sync(inst))
             }
             WhichMsg::Catchup(catchup) => {
                 let catchup = catchup?;
                 let value = catchup.get_value()?;
-                Ok(MultiPaxosMessage::Catchup(peer, inst, value.to_vec()))
+                Ok(MultiPaxosMessage::Catchup(inst, value.to_vec()))
             }
-        }
-    }
-
-    pub fn peer(&self) -> NodeId {
-        match *self {
-            MultiPaxosMessage::Prepare(_, Prepare(peer, _))
-            | MultiPaxosMessage::Promise(_, Promise(peer, _, _))
-            | MultiPaxosMessage::Accept(_, Accept(peer, _, _))
-            | MultiPaxosMessage::Accepted(_, Accepted(peer, _, _))
-            | MultiPaxosMessage::Reject(_, Reject(peer, _, _))
-            | MultiPaxosMessage::Sync(peer, _)
-            | MultiPaxosMessage::Catchup(peer, _, _) => peer,
         }
     }
 
@@ -176,14 +160,14 @@ impl MultiPaxosMessage {
         let mut builder = Builder::new(HeapAllocator::new());
 
         match self {
-            MultiPaxosMessage::Prepare(inst, Prepare(_peer, proposal)) => {
+            MultiPaxosMessage::Prepare(inst, Prepare(proposal)) => {
                 let mut msg = builder.init_root::<messages_capnp::paxos_message::Builder>();
                 msg.set_instance(inst);
                 let prepare = msg.borrow().init_prepare();
                 let ballot = prepare.init_proposal();
                 serialize_ballot(proposal, ballot);
             }
-            MultiPaxosMessage::Promise(inst, Promise(_peer, proposal, last_accepted)) => {
+            MultiPaxosMessage::Promise(inst, Promise(proposal, last_accepted)) => {
                 let mut msg = builder.init_root::<messages_capnp::paxos_message::Builder>();
                 msg.set_instance(inst);
                 let mut promise = msg.borrow().init_promise();
@@ -204,7 +188,7 @@ impl MultiPaxosMessage {
                     }
                 }
             }
-            MultiPaxosMessage::Accept(inst, Accept(_peer, proposal, value)) => {
+            MultiPaxosMessage::Accept(inst, Accept(proposal, value)) => {
                 let mut msg = builder.init_root::<messages_capnp::paxos_message::Builder>();
                 msg.set_instance(inst);
                 let mut accept = msg.borrow().init_accept();
@@ -217,7 +201,7 @@ impl MultiPaxosMessage {
                 // TODO: how do we move instead of copy
                 accept.set_value(&value);
             }
-            MultiPaxosMessage::Accepted(inst, Accepted(_peer, proposal, value)) => {
+            MultiPaxosMessage::Accepted(inst, Accepted(proposal, value)) => {
                 let mut msg = builder.init_root::<messages_capnp::paxos_message::Builder>();
                 msg.set_instance(inst);
                 let mut accepted = msg.borrow().init_accepted();
@@ -227,7 +211,7 @@ impl MultiPaxosMessage {
                 }
                 accepted.set_value(&value);
             }
-            MultiPaxosMessage::Reject(inst, Reject(_peer, proposal, promised)) => {
+            MultiPaxosMessage::Reject(inst, Reject(proposal, promised)) => {
                 let mut msg = builder.init_root::<messages_capnp::paxos_message::Builder>();
                 msg.set_instance(inst);
                 let mut reject = msg.borrow().init_reject();
@@ -240,12 +224,12 @@ impl MultiPaxosMessage {
                     serialize_ballot(promised, ballot);
                 }
             }
-            MultiPaxosMessage::Sync(_peer, inst) => {
+            MultiPaxosMessage::Sync(inst) => {
                 let mut msg = builder.init_root::<messages_capnp::paxos_message::Builder>();
                 msg.set_instance(inst);
                 msg.borrow().init_sync();
             }
-            MultiPaxosMessage::Catchup(_peer, inst, value) => {
+            MultiPaxosMessage::Catchup(inst, value) => {
                 let mut msg = builder.init_root::<messages_capnp::paxos_message::Builder>();
                 msg.set_instance(inst);
                 let mut catchup = msg.borrow().init_catchup();
@@ -261,20 +245,20 @@ impl MultiPaxosMessage {
 #[derive(Clone, Debug)]
 pub enum ClientMessage {
     /// Proposes new value
-    ProposeRequest(SocketAddr, Value),
+    ProposeRequest(Value),
 
     /// Requests that the current value be sent back
-    LookupValueRequest(SocketAddr),
+    LookupValueRequest,
 
     /// Current value reply
-    CurrentValueResponse(SocketAddr, Value),
+    CurrentValueResponse(Value),
 
     /// No current value
-    NoValueResponse(SocketAddr),
+    NoValueResponse,
 }
 
 impl ClientMessage {
-    pub fn deserialize(addr: SocketAddr, buf: &[u8]) -> Result<ClientMessage, DeserializeError> {
+    pub fn deserialize(buf: &[u8]) -> Result<ClientMessage, DeserializeError> {
         let mut cursor = io::Cursor::new(buf);
         let reader = read_message(&mut cursor, ReaderOptions::new())?;
 
@@ -284,56 +268,52 @@ impl ClientMessage {
         match client_msg.which()? {
             WhichMsg::ProposeValueRequest(propose) => {
                 let value = propose?.get_value()?.to_vec();
-                Ok(ClientMessage::ProposeRequest(addr, value))
+                Ok(ClientMessage::ProposeRequest(value))
             }
             WhichMsg::LookupValueRequest(lookup) => {
                 let _ = lookup?;
-                Ok(ClientMessage::LookupValueRequest(addr))
+                Ok(ClientMessage::LookupValueRequest)
             }
             WhichMsg::CurrentValueResponse(current_val) => {
                 let value = current_val?.get_value()?.to_vec();
-                Ok(ClientMessage::CurrentValueResponse(addr, value))
+                Ok(ClientMessage::CurrentValueResponse(value))
             }
             WhichMsg::NoCurrentValueResponse(no_current_val) => {
                 let _ = no_current_val?;
-                Ok(ClientMessage::NoValueResponse(addr))
+                Ok(ClientMessage::NoValueResponse)
             }
         }
     }
 
-    pub fn serialize<W>(self, write: &mut W) -> io::Result<SocketAddr>
+    pub fn serialize<W>(self, write: &mut W) -> io::Result<()>
     where
         W: io::Write,
     {
         let mut builder = Builder::new(HeapAllocator::new());
 
-        let addr = match self {
-            ClientMessage::ProposeRequest(addr, value) => {
+        match self {
+            ClientMessage::ProposeRequest(value) => {
                 let mut msg = builder.init_root::<messages_capnp::client_message::Builder>();
                 let mut propose = msg.init_propose_value_request();
                 propose.set_value(&value);
-                addr
             }
-            ClientMessage::LookupValueRequest(addr) => {
+            ClientMessage::LookupValueRequest => {
                 let mut msg = builder.init_root::<messages_capnp::client_message::Builder>();
                 msg.init_lookup_value_request();
-                addr
             }
-            ClientMessage::CurrentValueResponse(addr, value) => {
+            ClientMessage::CurrentValueResponse(value) => {
                 let mut msg = builder.init_root::<messages_capnp::client_message::Builder>();
                 let mut current_val = msg.init_current_value_response();
                 current_val.set_value(&value);
-                addr
             }
-            ClientMessage::NoValueResponse(addr) => {
+            ClientMessage::NoValueResponse => {
                 let mut msg = builder.init_root::<messages_capnp::client_message::Builder>();
                 msg.init_no_current_value_response();
-                addr
             }
         };
 
         write_message(write, &builder)?;
-        Ok(addr)
+        Ok(())
     }
 }
 
@@ -343,4 +323,12 @@ pub enum Message {
     MultiPaxos(MultiPaxosMessage),
     /// Message sent from an outside client
     Client(ClientMessage),
+}
+
+/// Message sent over the network
+pub struct NetworkMessage<M> {
+    /// Address of the receiptient of the message
+    pub address: SocketAddr,
+    /// The message
+    pub message: M,
 }

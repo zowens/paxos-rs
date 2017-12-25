@@ -4,39 +4,38 @@ use std::fmt;
 use tokio_core::net::{UdpCodec, UdpFramed, UdpSocket};
 use tokio_core::reactor::{Core, Handle};
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
-use config::Configuration;
-use messages::{ClientMessage, Message, MultiPaxosMessage};
+use messages::{ClientMessage, Message, MultiPaxosMessage, NetworkMessage};
 
-struct MultiPaxosCodec(Configuration);
+#[derive(Default)]
+struct MultiPaxosCodec;
 
 impl UdpCodec for MultiPaxosCodec {
-    type In = Option<MultiPaxosMessage>;
-    type Out = MultiPaxosMessage;
+    type In = Option<NetworkMessage<MultiPaxosMessage>>;
+    type Out = NetworkMessage<MultiPaxosMessage>;
 
-    fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<MultiPaxosMessage>> {
-        match self.0.peer_id(addr) {
-            Some(peer) => Ok(MultiPaxosMessage::deserialize(peer, buf)
-                .map_err(|e| error!("Error deserializing message {:?}", e))
-                .ok()),
-            None => {
-                warn!("No such peer at {:?}", addr);
-                Ok(None)
-            }
-        }
+    fn decode(
+        &mut self,
+        addr: &SocketAddr,
+        buf: &[u8],
+    ) -> io::Result<Option<NetworkMessage<MultiPaxosMessage>>> {
+        Ok(MultiPaxosMessage::deserialize(buf)
+            .map_err(|e| error!("Error deserializing message {:?}", e))
+            .map(|m| {
+                NetworkMessage {
+                    address: *addr,
+                    message: m,
+                }
+            })
+            .ok())
     }
 
-    fn encode(&mut self, msg: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
-        let peer = msg.peer();
-        let addr = match self.0.address(msg.peer()) {
-            Some(addr) => addr,
-            None => panic!("No peer address for NodeId={}", peer),
-        };
-
-        if let Err(e) = msg.serialize(into) {
+    fn encode(&mut self, out: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
+        let NetworkMessage { address, message } = out;
+        if let Err(e) = message.serialize(into) {
             error!("Error serialize message: {}", e);
         }
 
-        addr
+        address
     }
 }
 
@@ -44,64 +43,53 @@ impl UdpCodec for MultiPaxosCodec {
 struct ClientMessageCodec;
 
 impl UdpCodec for ClientMessageCodec {
-    type In = Option<ClientMessage>;
-    type Out = ClientMessage;
+    type In = Option<NetworkMessage<ClientMessage>>;
+    type Out = NetworkMessage<ClientMessage>;
 
-    fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<ClientMessage>> {
-        Ok(ClientMessage::deserialize(*addr, buf)
+    fn decode(
+        &mut self,
+        addr: &SocketAddr,
+        buf: &[u8],
+    ) -> io::Result<Option<NetworkMessage<ClientMessage>>> {
+        Ok(ClientMessage::deserialize(buf)
             .map_err(|e| error!("Error deserializing message {:?}", e))
             .ok()
-            .filter(|v| match *v {
-                ClientMessage::ProposeRequest(..) => true,
-                ClientMessage::LookupValueRequest(..) => true,
-                _ => {
-                    warn!("Ignoring non-request message");
-                    false
+            .map(|m| {
+                NetworkMessage {
+                    address: *addr,
+                    message: m,
                 }
             }))
     }
 
-    fn encode(&mut self, msg: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
-        msg.serialize(into).unwrap()
+    fn encode(&mut self, out: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
+        let NetworkMessage { address, message } = out;
+        message.serialize(into).unwrap();
+        address
     }
 }
 
-#[derive(Default)]
-struct ClientCodec;
-
-impl UdpCodec for ClientCodec {
-    type In = ClientMessage;
-    type Out = ClientMessage;
-
-    fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<ClientMessage> {
-        ClientMessage::deserialize(*addr, buf).map_err(|e| {
-            error!("Error deserializing message {:?}", e);
-            e.into()
-        })
-    }
-
-    fn encode(&mut self, msg: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
-        msg.serialize(into).unwrap()
-    }
-}
-
+/// Client to the UDP server.
 pub struct UdpClient {
-    client_framed: UdpFramed<ClientCodec>,
+    client_framed: UdpFramed<ClientMessageCodec>,
 }
 
 impl UdpClient {
     pub fn new(addr: &SocketAddr, handle: &Handle) -> io::Result<UdpClient> {
         Ok(UdpClient {
-            client_framed: UdpSocket::bind(addr, handle)?.framed(ClientCodec),
+            client_framed: UdpSocket::bind(addr, handle)?.framed(ClientMessageCodec),
         })
     }
 }
 
 impl Sink for UdpClient {
-    type SinkItem = ClientMessage;
+    type SinkItem = NetworkMessage<ClientMessage>;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, msg: ClientMessage) -> StartSend<ClientMessage, io::Error> {
+    fn start_send(
+        &mut self,
+        msg: NetworkMessage<ClientMessage>,
+    ) -> StartSend<NetworkMessage<ClientMessage>, io::Error> {
         self.client_framed.start_send(msg)
     }
 
@@ -111,11 +99,18 @@ impl Sink for UdpClient {
 }
 
 impl Stream for UdpClient {
-    type Item = ClientMessage;
+    type Item = NetworkMessage<ClientMessage>;
     type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<ClientMessage>, io::Error> {
-        self.client_framed.poll()
+    fn poll(&mut self) -> Poll<Option<NetworkMessage<ClientMessage>>, io::Error> {
+        // filter out values that are None (not parsed)
+        loop {
+            match try_ready!(self.client_framed.poll()) {
+                Some(Some(e)) => return Ok(Async::Ready(Some(e))),
+                Some(None) => {}
+                None => return Ok(Async::Ready(None)),
+            }
+        }
     }
 }
 
@@ -127,12 +122,11 @@ pub struct UdpServer {
 }
 
 impl UdpServer {
-    pub fn new(config: Configuration, client_addr: &SocketAddr) -> io::Result<UdpServer> {
+    pub fn new(multi_paxos_addr: &SocketAddr, client_addr: &SocketAddr) -> io::Result<UdpServer> {
         let core = Core::new()?;
         let handle = core.handle();
 
-        let framed =
-            UdpSocket::bind(config.current_address(), &handle)?.framed(MultiPaxosCodec(config));
+        let framed = UdpSocket::bind(multi_paxos_addr, &handle)?.framed(MultiPaxosCodec);
 
         let client_framed = UdpSocket::bind(client_addr, &handle)?.framed(ClientMessageCodec);
 
@@ -149,16 +143,30 @@ impl UdpServer {
 
     pub fn run<S: 'static>(mut self, upstream: S) -> Result<(), ()>
     where
-        S: Stream<Item = Message, Error = io::Error>,
-        S: Sink<SinkItem = Message, SinkError = io::Error>,
+        S: Stream<Item = NetworkMessage<Message>, Error = io::Error>,
+        S: Sink<SinkItem = NetworkMessage<Message>, SinkError = io::Error>,
     {
         let (sink, stream) = upstream.split();
 
         let (paxos_sink, paxos_recv_stream) = self.framed.split();
         let (client_sink, client_recv_stream) = self.client_framed.split();
 
-        let paxos_recv_stream = paxos_recv_stream.filter_map(|v| v.map(Message::MultiPaxos));
-        let client_recv_stream = client_recv_stream.filter_map(|m| m.map(Message::Client));
+        let paxos_recv_stream = paxos_recv_stream.filter_map(|v| {
+            v.map(|m| {
+                NetworkMessage {
+                    address: m.address,
+                    message: Message::MultiPaxos(m.message),
+                }
+            })
+        });
+        let client_recv_stream = client_recv_stream.filter_map(|v| {
+            v.map(|m| {
+                NetworkMessage {
+                    address: m.address,
+                    message: Message::Client(m.message),
+                }
+            })
+        });
 
         // send replies from upstream to the network
         self.core.handle().spawn(EmptyFuture(ForwardMessage::new(
@@ -205,14 +213,14 @@ struct ForwardMessage<S, P, C> {
     paxos_poll_complete: bool,
     client_poll_complete: bool,
 
-    buffered: Option<Message>,
+    buffered: Option<NetworkMessage<Message>>,
 }
 
 impl<S, P, C> ForwardMessage<S, P, C>
 where
-    S: Stream<Item = Message, Error = io::Error>,
-    P: Sink<SinkItem = MultiPaxosMessage, SinkError = io::Error>,
-    C: Sink<SinkItem = ClientMessage, SinkError = io::Error>,
+    S: Stream<Item = NetworkMessage<Message>, Error = io::Error>,
+    P: Sink<SinkItem = NetworkMessage<MultiPaxosMessage>, SinkError = io::Error>,
+    C: Sink<SinkItem = NetworkMessage<ClientMessage>, SinkError = io::Error>,
 {
     fn new(stream: S, paxos_sink: P, client_sink: C) -> ForwardMessage<S, P, C> {
         ForwardMessage {
@@ -225,19 +233,39 @@ where
         }
     }
 
-    fn try_start_send(&mut self, item: Message) -> Poll<(), io::Error> {
+    fn try_start_send(&mut self, item: NetworkMessage<Message>) -> Poll<(), io::Error> {
         match item {
-            Message::MultiPaxos(m) => {
+            NetworkMessage {
+                address,
+                message: Message::MultiPaxos(m),
+            } => {
+                let m = NetworkMessage {
+                    address,
+                    message: m,
+                };
                 if let AsyncSink::NotReady(item) = self.paxos_sink.start_send(m)? {
-                    self.buffered = Some(Message::MultiPaxos(item));
+                    self.buffered = Some(NetworkMessage {
+                        address: item.address,
+                        message: Message::MultiPaxos(item.message),
+                    });
                     return Ok(Async::NotReady);
                 } else {
                     self.paxos_poll_complete = true;
                 }
             }
-            Message::Client(m) => {
+            NetworkMessage {
+                address,
+                message: Message::Client(m),
+            } => {
+                let m = NetworkMessage {
+                    address,
+                    message: m,
+                };
                 if let AsyncSink::NotReady(item) = self.client_sink.start_send(m)? {
-                    self.buffered = Some(Message::Client(item));
+                    self.buffered = Some(NetworkMessage {
+                        address: item.address,
+                        message: Message::Client(item.message),
+                    });
                     return Ok(Async::NotReady);
                 } else {
                     self.client_poll_complete = true;
@@ -262,9 +290,9 @@ where
 
 impl<S, P, C> Future for ForwardMessage<S, P, C>
 where
-    S: Stream<Item = Message, Error = io::Error>,
-    P: Sink<SinkItem = MultiPaxosMessage, SinkError = io::Error>,
-    C: Sink<SinkItem = ClientMessage, SinkError = io::Error>,
+    S: Stream<Item = NetworkMessage<Message>, Error = io::Error>,
+    P: Sink<SinkItem = NetworkMessage<MultiPaxosMessage>, SinkError = io::Error>,
+    C: Sink<SinkItem = NetworkMessage<ClientMessage>, SinkError = io::Error>,
 {
     type Item = ();
     type Error = io::Error;
