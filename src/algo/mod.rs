@@ -2,7 +2,6 @@ mod messages;
 mod instance;
 
 use std::cmp::Ordering;
-use std::collections::HashSet;
 pub use self::instance::PaxosInstance;
 pub use self::messages::*;
 
@@ -55,7 +54,7 @@ pub type Value = Vec<u8>;
 #[derive(Clone, Debug)]
 struct QuorumSet {
     quorum_size: usize,
-    values: HashSet<NodeId>,
+    values: Vec<NodeId>,
 }
 
 impl QuorumSet {
@@ -63,7 +62,7 @@ impl QuorumSet {
     pub fn with_size(size: usize) -> QuorumSet {
         QuorumSet {
             quorum_size: size,
-            values: HashSet::with_capacity(size),
+            values: Vec::with_capacity(size),
         }
     }
 
@@ -74,17 +73,23 @@ impl QuorumSet {
 
     /// Inserts a node into the set
     pub fn insert(&mut self, n: NodeId) {
-        self.values.insert(n);
+        let loc = self.values.binary_search(&n);
+        if let Err(loc) = loc {
+            self.values.insert(loc, n);
+        }
     }
 
     /// Flag indicating whether the set contains a given node
     pub fn contains(&self, n: NodeId) -> bool {
-        self.values.contains(&n)
+        self.values.binary_search(&n).is_ok()
     }
 
     /// Removes a node from the set
     pub fn remove(&mut self, n: NodeId) {
-        self.values.remove(&n);
+        let loc = self.values.binary_search(&n);
+        if let Ok(ind) = loc {
+           self.values.remove(ind);
+        }
     }
 
     /// Flag indicating whether the set is empty

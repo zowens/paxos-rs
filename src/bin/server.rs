@@ -5,6 +5,7 @@ extern crate paxos;
 extern crate tokio_core;
 extern crate tokio_io;
 
+use std::env::args;
 use std::net::SocketAddr;
 use std::net::Ipv4Addr;
 use futures::{Future, Stream};
@@ -12,8 +13,6 @@ use tokio_core::net::TcpListener;
 use tokio_core::reactor::Handle;
 use tokio_io::AsyncRead;
 use tokio_io::codec::LinesCodec;
-
-use std::env::args;
 use paxos::{Configuration, MultiPaxos, ProposalSender, Register, ReplicatedState, UdpServer};
 
 fn local_config(node: u16) -> (Configuration, SocketAddr) {
