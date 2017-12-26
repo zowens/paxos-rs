@@ -15,6 +15,7 @@ extern crate tokio_core;
 
 mod algo;
 mod state;
+mod statemachine;
 pub mod messages;
 mod multipaxos;
 mod net;
@@ -22,7 +23,8 @@ mod register;
 mod config;
 mod timer;
 
-pub use multipaxos::{MultiPaxos, ReplicatedState};
+pub use multipaxos::MultiPaxos;
+pub use statemachine::ReplicatedState;
 pub use net::{UdpClient, UdpServer};
 pub use register::Register;
 pub use config::{Configuration, PeerIntoIter, PeerIter};

@@ -1,6 +1,6 @@
 use algo::Value;
 use super::Instance;
-use multipaxos::ReplicatedState;
+use statemachine::ReplicatedState;
 
 /// Replicated mutable value register
 #[derive(Default)]

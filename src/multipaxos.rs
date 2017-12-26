@@ -1,38 +1,15 @@
 use std::io;
 use std::net::SocketAddr;
-use std::cmp::min;
-use std::time::Duration;
-use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
 use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
-use futures::task;
 use either::Either;
 use messages::*;
 use algo::*;
 use super::Instance;
 use state::*;
+use statemachine::*;
 use config::*;
-use timer::Scheduler;
-use rand::{thread_rng, Rng};
-
-/// Starting timeout for restarting Phase 1
-const RESOLUTION_STARTING_MS: u64 = 5;
-/// Cap on the timeout for restarting Phase 1
-const RESOLUTION_MAX_MS: u64 = 3000;
-/// Timeout for post-ACCEPT restarting Phase 1
-const RESOLUTION_SILENCE_TIMEOUT: u64 = 4000;
-/// Periodic synchronization time
-const SYNC_TIME_MS: u64 = 5000;
-
-/// `ReplicatedState` is a state machine that applies value synchronously. The
-/// value is replicated with `MultiPaxos`.
-pub trait ReplicatedState {
-    /// Apply a value to the state machine
-    fn apply_value(&mut self, instance: Instance, value: Value);
-
-    // TODO: need log semantics
-    /// Snapshots the value
-    fn snapshot(&self, instance: Instance) -> Option<Value>;
-}
+use timer::*;
 
 /// `MultiPaxos` receives messages and attempts to receive consensus on a replicated
 /// value. Multiple instances of the paxos algorithm are chained together.
@@ -61,12 +38,12 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler> {
     // timers for driving resolution
     retransmit_timer: RetransmitTimer<S>,
     prepare_timer: InstanceResolutionTimer<S>,
-    sync_timer: S::Stream,
+    sync_timer: RandomPeerSyncTimer<S>,
 }
 
 impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// Creates a new multi-paxos machine
-    pub fn new(mut state_machine: R, mut scheduler: S, config: Configuration) -> MultiPaxos<R, S> {
+    pub fn new(mut state_machine: R, scheduler: S, config: Configuration) -> MultiPaxos<R, S> {
         let mut state_handler = StateHandler::new();
 
         let state = state_handler.load().unwrap_or_default();
@@ -84,7 +61,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         let (downstream_sink, downstream_stream) = unbounded::<NetworkMessage<Message>>();
 
         let retransmit_timer = RetransmitTimer::new(scheduler.clone());
-        let sync_timer = scheduler.interval(Duration::from_millis(SYNC_TIME_MS));
+        let sync_timer = RandomPeerSyncTimer::new(scheduler.clone());
         let prepare_timer = InstanceResolutionTimer::new(scheduler);
 
         MultiPaxos {
@@ -496,141 +473,5 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
         self.downstream_stream
             .poll()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "unexpected timer error"))
-    }
-}
-
-/// Timer that will resend a message to the downstream peers in order
-/// to drive consensus.
-struct RetransmitTimer<S: Scheduler> {
-    scheduler: S,
-    msg: Option<(Instance, ProposerMsg, S::Stream)>,
-    parked_receive: Option<task::Task>,
-}
-
-impl<S> RetransmitTimer<S>
-where
-    S: Scheduler,
-{
-    pub fn new(scheduler: S) -> RetransmitTimer<S> {
-        RetransmitTimer {
-            scheduler,
-            msg: None,
-            parked_receive: None,
-        }
-    }
-
-    /// Clears the current timer
-    pub fn reset(&mut self) {
-        self.msg = None;
-    }
-
-    /// Schedules a message for resend
-    pub fn schedule(&mut self, inst: Instance, msg: ProposerMsg) {
-        self.msg = Some((
-            inst,
-            msg,
-            self.scheduler.interval(Duration::from_millis(1000)),
-        ));
-
-        // notify any parked receive
-        if let Some(task) = self.parked_receive.take() {
-            task.notify();
-        }
-    }
-}
-
-impl<S: Scheduler> Stream for RetransmitTimer<S> {
-    type Item = (Instance, ProposerMsg);
-    type Error = io::Error;
-
-    fn poll(&mut self) -> Poll<Option<(Instance, ProposerMsg)>, io::Error> {
-        match self.msg.as_mut() {
-            Some(&mut (inst, ref msg, ref mut f)) => match f.poll()? {
-                Async::Ready(Some(())) => Ok(Async::Ready(Some((inst, msg.clone())))),
-                Async::Ready(None) => unreachable!("Infinite stream from Scheduler terminated"),
-                Async::NotReady => Ok(Async::NotReady),
-            },
-            None => {
-                self.parked_receive = Some(task::current());
-                Ok(Async::NotReady)
-            }
-        }
-    }
-}
-
-/// Timer that allows the node to re-enter Phase 1 in order to
-/// drive resolution with a higher ballot.
-struct InstanceResolutionTimer<S: Scheduler> {
-    scheduler: S,
-    backoff_ms: u64,
-    stream: Option<(Instance, S::Stream)>,
-    parked_receive: Option<task::Task>,
-}
-
-impl<S: Scheduler> InstanceResolutionTimer<S> {
-    pub fn new(scheduler: S) -> InstanceResolutionTimer<S> {
-        InstanceResolutionTimer {
-            scheduler,
-            backoff_ms: RESOLUTION_STARTING_MS,
-            stream: None,
-            parked_receive: None,
-        }
-    }
-
-    /// Schedules a timer to start Phase 1 when a node receives an ACCEPT
-    /// message (Phase 2b) and does not hear an ACCEPTED message from a
-    /// quorum of acceptors.
-    pub fn schedule_timeout(&mut self, inst: Instance) {
-        // TODO: do we want to add some Jitter?
-        self.stream = Some((
-            inst,
-            self.scheduler
-                .interval(Duration::from_millis(RESOLUTION_SILENCE_TIMEOUT)),
-        ));
-
-        if let Some(task) = self.parked_receive.take() {
-            task.notify();
-        }
-    }
-
-    /// Schedules a timer to schedule retry of the round with a higher ballot.
-    pub fn schedule_retry(&mut self, inst: Instance) {
-        self.backoff_ms = min(self.backoff_ms * 2, RESOLUTION_MAX_MS);
-
-        let jitter_retry_ms = thread_rng().gen_range(RESOLUTION_STARTING_MS, self.backoff_ms + 1);
-        self.stream = Some((
-            inst,
-            self.scheduler
-                .interval(Duration::from_millis(jitter_retry_ms)),
-        ));
-
-        if let Some(task) = self.parked_receive.take() {
-            task.notify();
-        }
-    }
-
-    /// Clears the current timer
-    pub fn reset(&mut self) {
-        self.backoff_ms = RESOLUTION_STARTING_MS;
-        self.stream = None;
-    }
-}
-
-impl<S: Scheduler> Stream for InstanceResolutionTimer<S> {
-    type Item = Instance;
-    type Error = io::Error;
-
-    fn poll(&mut self) -> Poll<Option<Instance>, io::Error> {
-        match self.stream.as_mut() {
-            Some(&mut (inst, ref mut f)) => match f.poll()? {
-                Async::Ready(Some(())) => Ok(Async::Ready(Some(inst))),
-                Async::Ready(None) => unreachable!("Infinite stream from Scheduler terminated"),
-                Async::NotReady => Ok(Async::NotReady),
-            },
-            None => {
-                self.parked_receive = Some(task::current());
-                Ok(Async::NotReady)
-            }
-        }
     }
 }
