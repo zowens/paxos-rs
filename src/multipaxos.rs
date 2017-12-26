@@ -22,7 +22,7 @@ use timer::*;
 /// `MultiPaxos` is both a `futures::Stream` and `futures::Sink`. It takes in messages
 /// and produces messages for other actors within the system. The algorithm itself
 /// is separated from any networking concerns.
-pub struct MultiPaxos<R: ReplicatedState, S: Scheduler> {
+pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
     state_machine: R,
     state_handler: StateHandler,
 
@@ -44,9 +44,19 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler> {
     sync_timer: RandomPeerSyncTimer<S>,
 }
 
+impl<R: ReplicatedState> MultiPaxos<R, FuturesScheduler> {
+    pub fn new(state_machine: R, config: Configuration) -> MultiPaxos<R, FuturesScheduler> {
+        MultiPaxos::with_scheduler(state_machine, FuturesScheduler, config)
+    }
+}
+
 impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// Creates a new multi-paxos machine
-    pub fn new(mut state_machine: R, scheduler: S, config: Configuration) -> MultiPaxos<R, S> {
+    pub fn with_scheduler(
+        mut state_machine: R,
+        scheduler: S,
+        config: Configuration,
+    ) -> MultiPaxos<R, S> {
         let mut state_handler = StateHandler::new();
 
         let state = state_handler.load().unwrap_or_default();

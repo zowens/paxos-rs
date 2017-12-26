@@ -563,10 +563,14 @@ impl PaxosInstance {
             Either::Left(accepted) => {
                 // track self as accepting in the learner state machine
                 // (without propagating the message to the network)
-                let resolution = self.learner.receive_accepted(self.proposer.current, accepted.clone());
-                debug_assert!(resolution.is_none(), "Should not have resolved with a single vote");
+                let resolution = self.learner
+                    .receive_accepted(self.proposer.current, accepted.clone());
+                debug_assert!(
+                    resolution.is_none(),
+                    "Should not have resolved with a single vote"
+                );
                 Either::Left(accepted)
-            },
+            }
             v => v,
         }
     }

@@ -14,8 +14,7 @@ use tokio_io::AsyncRead;
 use tokio_io::codec::LinesCodec;
 
 use std::env::args;
-use paxos::{Configuration, FuturesScheduler, MultiPaxos, ProposalSender, Register,
-            ReplicatedState, UdpServer};
+use paxos::{Configuration, MultiPaxos, ProposalSender, Register, ReplicatedState, UdpServer};
 
 fn local_config(node: u16) -> (Configuration, SocketAddr) {
     assert!(node < 3);
@@ -100,7 +99,7 @@ pub fn main() {
 
     let register = Register::default();
     let server = UdpServer::new(&config).unwrap();
-    let multi_paxos = MultiPaxos::new(register.clone(), FuturesScheduler::default(), config);
+    let multi_paxos = MultiPaxos::new(register.clone(), config);
     spawn_client_handler(
         register,
         client_addr,
