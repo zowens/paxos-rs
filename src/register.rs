@@ -1,11 +1,21 @@
+use std::rc::Rc;
+use std::cell::RefCell;
 use algo::Value;
 use super::Instance;
 use statemachine::ReplicatedState;
 
 /// Replicated mutable value register
-#[derive(Default)]
+#[derive(Clone)]
 pub struct Register {
-    value: Option<Value>,
+    value: Rc<RefCell<Option<Value>>>,
+}
+
+impl Default for Register {
+    fn default() -> Register {
+        Register {
+            value: Rc::new(RefCell::new(None)),
+        }
+    }
 }
 
 impl ReplicatedState for Register {
@@ -15,10 +25,12 @@ impl ReplicatedState for Register {
             instance,
             value
         );
-        self.value = Some(value);
+
+        let mut v = self.value.borrow_mut();
+        *v = Some(value);
     }
 
     fn snapshot(&self, _instance: Instance) -> Option<Value> {
-        self.value.clone()
+        self.value.borrow().clone()
     }
 }

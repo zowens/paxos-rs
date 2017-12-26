@@ -1,13 +1,21 @@
 #![feature(ip_constructors)]
-extern crate paxos;
-extern crate futures;
 extern crate env_logger;
+extern crate futures;
+extern crate paxos;
+extern crate tokio_core;
+extern crate tokio_io;
 
 use std::net::SocketAddr;
 use std::net::Ipv4Addr;
+use futures::{Future, Stream};
+use tokio_core::net::TcpListener;
+use tokio_core::reactor::Handle;
+use tokio_io::AsyncRead;
+use tokio_io::codec::LinesCodec;
 
 use std::env::args;
-use paxos::{Configuration, UdpServer, Register, FuturesScheduler, MultiPaxos};
+use paxos::{Configuration, FuturesScheduler, MultiPaxos, ProposalSender, Register,
+            ReplicatedState, UdpServer};
 
 fn local_config(node: u16) -> (Configuration, SocketAddr) {
     assert!(node < 3);
@@ -15,8 +23,69 @@ fn local_config(node: u16) -> (Configuration, SocketAddr) {
     let ip = Ipv4Addr::localhost().into();
     let current = (node as u64, SocketAddr::new(ip, 3000 + node));
     let client_addr = SocketAddr::new(ip, 4000 + node);
-    let others = (0..3u16).filter(|n| *n != node).map(|n| (n as u64, SocketAddr::new(ip, 3000 + n)));
+    let others = (0..3u16)
+        .filter(|n| *n != node)
+        .map(|n| (n as u64, SocketAddr::new(ip, 3000 + n)));
     (Configuration::new(current, others), client_addr)
+}
+
+enum Command {
+    Get,
+    Propose,
+}
+
+/// Allow clients to send messages to issue commands to the node:
+///
+/// Examples:
+/// * `get`
+/// * `propose hello world`
+fn spawn_client_handler(
+    register: Register,
+    addr: SocketAddr,
+    handle: Handle,
+    proposals: ProposalSender,
+) {
+    let socket = TcpListener::bind(&addr, &handle).unwrap();
+
+    let handle_inner = handle.clone();
+    let server = socket.incoming().for_each(move |(socket, _)| {
+        let register = register.clone();
+        let proposals = proposals.clone();
+
+        let (sink, stream) = socket.framed(LinesCodec::new()).split();
+        let client_future = stream
+            .map(move |mut req| {
+                let proposals = proposals.clone();
+                let cmd = {
+                    req.split_whitespace().next().and_then(|cmd| match cmd {
+                        "get" => Some(Command::Get),
+                        "propose" => Some(Command::Propose),
+                        _ => None,
+                    })
+                };
+                match cmd {
+                    Some(Command::Get) => match register.snapshot(0) {
+                        Some(v) => String::from_utf8(v)
+                            .unwrap_or_else(|_| "ERR: Value not UTF-8".to_string()),
+                        None => "ERR: No Value".to_string(),
+                    },
+                    Some(Command::Propose) => {
+                        let value = req.split_off(8).into_bytes();
+                        proposals
+                            .propose(value)
+                            .map(|_| "OK".to_string())
+                            .unwrap_or_else(|_| "ERR: Unable to propose".to_string())
+                    }
+                    None => "ERR: Invalid command".to_string(),
+                }
+            })
+            .forward(sink);
+        handle_inner.spawn(client_future.map(|_| ()).map_err(|_| ()));
+
+        Ok(())
+    });
+
+    handle.spawn(server.map_err(|_| ()));
 }
 
 pub fn main() {
@@ -29,7 +98,14 @@ pub fn main() {
 
     println!("{:?}", config);
 
-    let server = UdpServer::new(config.current_address(), &client_addr).unwrap();
-    let multi_paxos = MultiPaxos::new(Register::default(), FuturesScheduler::default(), config);
-    server.run(multi_paxos).unwrap();
+    let register = Register::default();
+    let server = UdpServer::new(&config).unwrap();
+    let multi_paxos = MultiPaxos::new(register.clone(), FuturesScheduler::default(), config);
+    spawn_client_handler(
+        register,
+        client_addr,
+        server.handle(),
+        multi_paxos.proposal_sender(),
+    );
+    server.run(multi_paxos.into_networked()).unwrap();
 }

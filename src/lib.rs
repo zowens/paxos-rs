@@ -23,9 +23,9 @@ mod register;
 mod config;
 mod timer;
 
-pub use multipaxos::MultiPaxos;
+pub use multipaxos::{MultiPaxos, ProposalSender};
 pub use statemachine::ReplicatedState;
-pub use net::{UdpClient, UdpServer};
+pub use net::UdpServer;
 pub use register::Register;
 pub use config::{Configuration, PeerIntoIter, PeerIter};
 pub use timer::{FuturesScheduler, Scheduler};

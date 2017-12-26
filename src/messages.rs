@@ -2,7 +2,7 @@ use std::io;
 use std::net::SocketAddr;
 
 use super::Instance;
-pub use algo::{Accept, Accepted, Ballot, Prepare, Promise, Reject, Value};
+pub use algo::{Accept, Accepted, Ballot, NodeId, Prepare, Promise, Reject, Value};
 
 use capnp::{Error as CapnpError, NotInSchema};
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
@@ -241,94 +241,18 @@ impl MultiPaxosMessage {
     }
 }
 
-/// Message received from clients.
-#[derive(Clone, Debug)]
-pub enum ClientMessage {
-    /// Proposes new value
-    ProposeRequest(Value),
-
-    /// Requests that the current value be sent back
-    LookupValueRequest,
-
-    /// Current value reply
-    CurrentValueResponse(Value),
-
-    /// No current value
-    NoValueResponse,
-}
-
-impl ClientMessage {
-    pub fn deserialize(buf: &[u8]) -> Result<ClientMessage, DeserializeError> {
-        let mut cursor = io::Cursor::new(buf);
-        let reader = read_message(&mut cursor, ReaderOptions::new())?;
-
-        use messages_capnp::client_message::Which as WhichMsg;
-
-        let client_msg = reader.get_root::<messages_capnp::client_message::Reader>()?;
-        match client_msg.which()? {
-            WhichMsg::ProposeValueRequest(propose) => {
-                let value = propose?.get_value()?.to_vec();
-                Ok(ClientMessage::ProposeRequest(value))
-            }
-            WhichMsg::LookupValueRequest(lookup) => {
-                let _ = lookup?;
-                Ok(ClientMessage::LookupValueRequest)
-            }
-            WhichMsg::CurrentValueResponse(current_val) => {
-                let value = current_val?.get_value()?.to_vec();
-                Ok(ClientMessage::CurrentValueResponse(value))
-            }
-            WhichMsg::NoCurrentValueResponse(no_current_val) => {
-                let _ = no_current_val?;
-                Ok(ClientMessage::NoValueResponse)
-            }
-        }
-    }
-
-    pub fn serialize<W>(self, write: &mut W) -> io::Result<()>
-    where
-        W: io::Write,
-    {
-        let mut builder = Builder::new(HeapAllocator::new());
-
-        match self {
-            ClientMessage::ProposeRequest(value) => {
-                let mut msg = builder.init_root::<messages_capnp::client_message::Builder>();
-                let mut propose = msg.init_propose_value_request();
-                propose.set_value(&value);
-            }
-            ClientMessage::LookupValueRequest => {
-                let mut msg = builder.init_root::<messages_capnp::client_message::Builder>();
-                msg.init_lookup_value_request();
-            }
-            ClientMessage::CurrentValueResponse(value) => {
-                let mut msg = builder.init_root::<messages_capnp::client_message::Builder>();
-                let mut current_val = msg.init_current_value_response();
-                current_val.set_value(&value);
-            }
-            ClientMessage::NoValueResponse => {
-                let mut msg = builder.init_root::<messages_capnp::client_message::Builder>();
-                msg.init_no_current_value_response();
-            }
-        };
-
-        write_message(write, &builder)?;
-        Ok(())
-    }
-}
-
-/// Either type for `MultiPaxosMessage` and `ClientMessage`
-pub enum Message {
-    /// Message sent within the cluster
-    MultiPaxos(MultiPaxosMessage),
-    /// Message sent from an outside client
-    Client(ClientMessage),
-}
-
 /// Message sent over the network
-pub struct NetworkMessage<M> {
-    /// Address of the receiptient of the message
+pub struct NetworkMessage {
+    /// Address of the receiptient or destination of the message
     pub address: SocketAddr,
     /// The message
-    pub message: M,
+    pub message: MultiPaxosMessage,
+}
+
+/// Message sent to a peer node in the cluster
+pub struct ClusterMessage {
+    /// Address of the receiptient or destination of the message
+    pub peer: NodeId,
+    /// The message
+    pub message: MultiPaxosMessage,
 }

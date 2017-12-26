@@ -1,5 +1,4 @@
 use std::io;
-use std::net::SocketAddr;
 use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
 use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use either::Either;
@@ -32,8 +31,12 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler> {
     config: Configuration,
 
     // downstream is sent out from this node
-    downstream_sink: UnboundedSender<NetworkMessage<Message>>,
-    downstream_stream: UnboundedReceiver<NetworkMessage<Message>>,
+    downstream_sink: UnboundedSender<ClusterMessage>,
+    downstream_stream: UnboundedReceiver<ClusterMessage>,
+
+    // proposals received async
+    proposal_sink: UnboundedSender<Value>,
+    proposal_stream: UnboundedReceiver<Value>,
 
     // timers for driving resolution
     retransmit_timer: RetransmitTimer<S>,
@@ -58,7 +61,8 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             state_machine.apply_value(state.instance, v);
         }
 
-        let (downstream_sink, downstream_stream) = unbounded::<NetworkMessage<Message>>();
+        let (downstream_sink, downstream_stream) = unbounded::<ClusterMessage>();
+        let (proposal_sink, proposal_stream) = unbounded::<Value>();
 
         let retransmit_timer = RetransmitTimer::new(scheduler.clone());
         let sync_timer = RandomPeerSyncTimer::new(scheduler.clone());
@@ -72,9 +76,23 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             config,
             downstream_sink,
             downstream_stream,
+            proposal_sink,
+            proposal_stream,
             retransmit_timer,
             prepare_timer,
             sync_timer,
+        }
+    }
+
+    /// Creates stream and sink for network messages.
+    pub fn into_networked(self) -> NetworkedMultiPaxos<R, S> {
+        NetworkedMultiPaxos { multipaxos: self }
+    }
+
+    /// Creates a sink for proposals
+    pub fn proposal_sender(&self) -> ProposalSender {
+        ProposalSender {
+            sink: self.proposal_sink.clone(),
         }
     }
 
@@ -100,27 +118,9 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     #[inline]
-    fn send_multipaxos(&self, peer: NodeId, m: MultiPaxosMessage) {
-        match self.config.address(peer) {
-            Some(address) => {
-                self.downstream_sink
-                    .unbounded_send(NetworkMessage {
-                        address,
-                        message: Message::MultiPaxos(m),
-                    })
-                    .unwrap();
-            }
-            None => warn!("Unknown peer ID = {}", peer),
-        }
-    }
-
-    #[inline]
-    fn send_client(&self, address: SocketAddr, m: ClientMessage) {
+    fn send_multipaxos(&self, peer: NodeId, message: MultiPaxosMessage) {
         self.downstream_sink
-            .unbounded_send(NetworkMessage {
-                address,
-                message: Message::Client(m),
-            })
+            .unbounded_send(ClusterMessage { peer, message })
             .unwrap();
     }
 
@@ -350,88 +350,36 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             self.advance_instance(inst - 1, current);
         }
     }
-
-    fn on_client_lookup(&mut self, addr: SocketAddr) {
-        let inst = self.instance;
-        match self.state_machine.snapshot(inst) {
-            Some(v) => {
-                self.send_client(addr, ClientMessage::CurrentValueResponse(v));
-            }
-            None => {
-                self.send_client(addr, ClientMessage::NoValueResponse);
-            }
-        }
-    }
 }
 
 impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
-    type SinkItem = NetworkMessage<Message>;
+    type SinkItem = ClusterMessage;
     type SinkError = io::Error;
 
-    fn start_send(
-        &mut self,
-        msg: NetworkMessage<Message>,
-    ) -> StartSend<NetworkMessage<Message>, io::Error> {
-        match msg {
-            NetworkMessage {
-                address,
-                message: Message::MultiPaxos(msg),
-            } => {
-                let peer = match self.config.peer_id(&address) {
-                    Some(v) => v,
-                    None => {
-                        warn!(
-                            "Received message from address, but is not in configuration: {}",
-                            address
-                        );
-                        return Ok(AsyncSink::Ready);
-                    }
-                };
-                debug!("Received message from peer {}: {:?}", peer, msg);
-                match msg {
-                    MultiPaxosMessage::Prepare(inst, prepare) => {
-                        self.on_prepare(peer, inst, prepare);
-                    }
-                    MultiPaxosMessage::Promise(inst, promise) => {
-                        self.on_promise(peer, inst, promise);
-                    }
-                    MultiPaxosMessage::Accept(inst, accept) => {
-                        self.on_accept(peer, inst, accept);
-                    }
-                    MultiPaxosMessage::Accepted(inst, accepted) => {
-                        self.on_accepted(peer, inst, accepted);
-                    }
-                    MultiPaxosMessage::Reject(inst, reject) => {
-                        self.on_reject(peer, inst, reject);
-                    }
-                    MultiPaxosMessage::Sync(inst) => {
-                        self.on_sync(peer, inst);
-                    }
-                    MultiPaxosMessage::Catchup(inst, value) => {
-                        self.on_catchup(inst, value);
-                    }
-                }
+    fn start_send(&mut self, msg: ClusterMessage) -> StartSend<ClusterMessage, io::Error> {
+        let ClusterMessage { peer, message } = msg;
+        match message {
+            MultiPaxosMessage::Prepare(inst, prepare) => {
+                self.on_prepare(peer, inst, prepare);
             }
-            NetworkMessage {
-                address,
-                message: Message::Client(msg),
-            } => match msg {
-                ClientMessage::ProposeRequest(value) => {
-                    debug!("Received PROPOSE request from client {}", address);
-                    self.propose_update(value);
-                }
-                ClientMessage::LookupValueRequest => {
-                    debug!("Received GET request from client {}", address);
-                    self.on_client_lookup(address);
-                }
-                req => {
-                    warn!(
-                        "Received unknown client request from address {}, {:?}",
-                        address,
-                        req
-                    );
-                }
-            },
+            MultiPaxosMessage::Promise(inst, promise) => {
+                self.on_promise(peer, inst, promise);
+            }
+            MultiPaxosMessage::Accept(inst, accept) => {
+                self.on_accept(peer, inst, accept);
+            }
+            MultiPaxosMessage::Accepted(inst, accepted) => {
+                self.on_accepted(peer, inst, accepted);
+            }
+            MultiPaxosMessage::Reject(inst, reject) => {
+                self.on_reject(peer, inst, reject);
+            }
+            MultiPaxosMessage::Sync(inst) => {
+                self.on_sync(peer, inst);
+            }
+            MultiPaxosMessage::Catchup(inst, value) => {
+                self.on_catchup(inst, value);
+            }
         }
 
         Ok(AsyncSink::Ready)
@@ -452,9 +400,9 @@ fn from_poll<V>(s: Poll<Option<V>, io::Error>) -> io::Result<Option<V>> {
 }
 
 impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
-    type Item = NetworkMessage<Message>;
+    type Item = ClusterMessage;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Option<NetworkMessage<Message>>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<ClusterMessage>, io::Error> {
         // poll for retransmission
         if let Some((inst, msg)) = from_poll(self.retransmit_timer.poll())? {
             self.poll_retransmit(inst, msg);
@@ -470,8 +418,113 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
             self.poll_syncronization();
         }
 
+        // poll for proposals
+        match self.proposal_stream.poll() {
+            Ok(Async::Ready(Some(value))) => self.propose_update(value),
+            Err(_) => warn!("Error polling for proposals"),
+            _ => {}
+        }
+
         self.downstream_stream
             .poll()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "unexpected timer error"))
+    }
+}
+
+pub struct NetworkedMultiPaxos<R: ReplicatedState, S: Scheduler> {
+    multipaxos: MultiPaxos<R, S>,
+}
+
+impl<R: ReplicatedState, S: Scheduler> Sink for NetworkedMultiPaxos<R, S> {
+    type SinkItem = NetworkMessage;
+    type SinkError = io::Error;
+
+    fn start_send(&mut self, msg: NetworkMessage) -> StartSend<NetworkMessage, io::Error> {
+        let NetworkMessage { address, message } = msg;
+        let peer = match self.multipaxos.config.peer_id(&address) {
+            Some(v) => v,
+            None => {
+                warn!(
+                    "Received message from address, but is not in configuration: {}",
+                    msg.address
+                );
+                return Ok(AsyncSink::Ready);
+            }
+        };
+
+        let send_res = self.multipaxos
+            .start_send(ClusterMessage { peer, message })?;
+        match send_res {
+            AsyncSink::Ready => Ok(AsyncSink::Ready),
+            AsyncSink::NotReady(ClusterMessage { message, .. }) => {
+                Ok(AsyncSink::NotReady(NetworkMessage { address, message }))
+            }
+        }
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), io::Error> {
+        self.multipaxos.poll_complete()
+    }
+}
+
+impl<R: ReplicatedState, S: Scheduler> Stream for NetworkedMultiPaxos<R, S> {
+    type Item = NetworkMessage;
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Option<NetworkMessage>, io::Error> {
+        loop {
+            match try_ready!(self.multipaxos.poll()) {
+                Some(ClusterMessage { peer, message }) => {
+                    if let Some(address) = self.multipaxos.config.address(peer) {
+                        return Ok(Async::Ready(Some(NetworkMessage { address, message })));
+                    } else {
+                        warn!("Unknown peer {:?}", peer);
+                    }
+                }
+                None => {
+                    return Ok(Async::Ready(None));
+                }
+            }
+        }
+    }
+}
+
+/// Sink allowing proposals to be sent to `MultiPaxos`.
+#[derive(Clone)]
+pub struct ProposalSender {
+    sink: UnboundedSender<Value>,
+}
+
+impl ProposalSender {
+    pub fn propose(&self, value: Value) -> io::Result<()> {
+        self.sink.unbounded_send(value).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Unexpected error with unbounded sender for proposal",
+            )
+        })
+    }
+}
+
+impl Sink for ProposalSender {
+    type SinkItem = Value;
+    type SinkError = io::Error;
+
+    fn start_send(&mut self, value: Value) -> StartSend<Value, io::Error> {
+        self.sink.start_send(value).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Unexpected error with start_send on unbounded sender for proposal",
+            )
+        })
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), io::Error> {
+        self.sink.poll_complete().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Unexpected error with poll_complete on unbounded sender for proposal",
+            )
+        })
     }
 }
