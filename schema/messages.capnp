@@ -1,8 +1,8 @@
 @0x8536a60dcae15982;
 
 struct Ballot {
-    id @0 :UInt64;
-    nodeId @1 :UInt64;
+    id @0 :UInt32;
+    nodeId @1 :UInt32;
 }
 
 # TODO: Generic over value type

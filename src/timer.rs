@@ -13,7 +13,7 @@ const RESOLUTION_STARTING_MS: u64 = 5;
 /// Cap on the timeout for restarting Phase 1
 const RESOLUTION_MAX_MS: u64 = 3000;
 /// Timeout for post-ACCEPT restarting Phase 1
-const RESOLUTION_SILENCE_TIMEOUT: u64 = 4000;
+const RESOLUTION_SILENCE_TIMEOUT: u64 = 5000;
 /// Periodic synchronization time
 const SYNC_TIME_MS: u64 = 5000;
 
@@ -65,6 +65,7 @@ where
 
     /// Schedules a message for resend
     pub fn schedule(&mut self, inst: Instance, msg: ProposerMsg) {
+        trace!("Scheduling retransmit");
         self.msg = Some((
             inst,
             msg,
@@ -120,6 +121,8 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
     /// message (Phase 2b) and does not hear an ACCEPTED message from a
     /// quorum of acceptors.
     pub fn schedule_timeout(&mut self, inst: Instance) {
+        trace!("Scheduling PREPARE takeover timeout");
+
         // TODO: do we want to add some Jitter?
         self.stream = Some((
             inst,
@@ -134,6 +137,7 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
 
     /// Schedules a timer to schedule retry of the round with a higher ballot.
     pub fn schedule_retry(&mut self, inst: Instance) {
+        trace!("Scheduling retry of PREPARE phase");
         self.backoff_ms = min(self.backoff_ms * 2, RESOLUTION_MAX_MS);
 
         let jitter_retry_ms = thread_rng().gen_range(RESOLUTION_STARTING_MS, self.backoff_ms + 1);

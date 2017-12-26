@@ -119,6 +119,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
     #[inline]
     fn send_multipaxos(&self, peer: NodeId, message: MultiPaxosMessage) {
+        trace!("Sending message to peer={}: {:?}", peer, message);
         self.downstream_sink
             .unbounded_send(ClusterMessage { peer, message })
             .unwrap();
@@ -358,6 +359,7 @@ impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
 
     fn start_send(&mut self, msg: ClusterMessage) -> StartSend<ClusterMessage, io::Error> {
         let ClusterMessage { peer, message } = msg;
+        debug!("Received message from peer={}: {:?}", peer, message);
         match message {
             MultiPaxosMessage::Prepare(inst, prepare) => {
                 self.on_prepare(peer, inst, prepare);

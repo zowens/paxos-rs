@@ -559,7 +559,16 @@ impl PaxosInstance {
         accept: Accept,
     ) -> Either<Accepted, Reply<Reject>> {
         self.proposer.observe_ballot(accept.0);
-        self.acceptor.receive_accept(peer, accept)
+        match self.acceptor.receive_accept(peer, accept) {
+            Either::Left(accepted) => {
+                // track self as accepting in the learner state machine
+                // (without propagating the message to the network)
+                let resolution = self.learner.receive_accepted(self.proposer.current, accepted.clone());
+                debug_assert!(resolution.is_none(), "Should not have resolved with a single vote");
+                Either::Left(accepted)
+            },
+            v => v,
+        }
     }
 
     /// Handles ACCEPTED messages from acceptors.

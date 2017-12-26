@@ -10,7 +10,7 @@ pub use self::messages::*;
 /// across multiple nodes. Ballots are unique in that ballot numbers between
 /// nodes are unique and it is algorithmically increasing per node.
 #[derive(PartialEq, Hash, Eq, Clone, Copy, Debug)]
-pub struct Ballot(pub u64, pub NodeId);
+pub struct Ballot(pub u32, pub NodeId);
 
 impl Ballot {
     /// Generates a ballot that is greater than `self` for a given node.
@@ -44,7 +44,7 @@ impl Ord for Ballot {
 
 /// A `NodeId` is a unique value that identifies a node
 /// within the configuration.
-pub type NodeId = u64;
+pub type NodeId = u32;
 
 // TODO: parameterize Value within PaxosInstance
 pub type Value = Vec<u8>;

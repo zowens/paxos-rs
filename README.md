@@ -56,6 +56,7 @@ cargo build --release
     - [ ] Mencius
     - [ ] WPaxos
 - [ ] Engineering
+    - [ ] Reject for wrong instance (rather than ignore)
     - [ ] Jepsen Testing
     - [ ] Configuration of timeouts and other internals
     - [ ] UDP vs. TCP
