@@ -2,7 +2,8 @@ use std::io;
 use std::net::SocketAddr;
 
 use super::Instance;
-pub use algo::{Accept, Accepted, Ballot, NodeId, Prepare, Promise, Reject, Value};
+pub use algo::{Accept, Accepted, Ballot, NodeId, Prepare, Promise, Reject};
+use algo::Value;
 
 use capnp::{Error as CapnpError, NotInSchema};
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
@@ -107,7 +108,7 @@ impl MultiPaxosMessage {
                             let bal =
                                 { deserialize_ballot(last_accepted.borrow().get_proposal()?) };
                             let val = last_accepted.get_value()?;
-                            Some((bal, Vec::from(val)))
+                            Some((bal, Vec::from(val).into()))
                         }
                     }
                 };
@@ -123,7 +124,7 @@ impl MultiPaxosMessage {
                 let value = accept.get_value()?;
                 Ok(MultiPaxosMessage::Accept(
                     inst,
-                    Accept(proposal, value.to_vec()),
+                    Accept(proposal, value.to_vec().into()),
                 ))
             }
             WhichMsg::Accepted(accepted) => {
@@ -132,7 +133,7 @@ impl MultiPaxosMessage {
                 let value = accepted.get_value()?;
                 Ok(MultiPaxosMessage::Accepted(
                     inst,
-                    Accepted(proposal, value.to_vec()),
+                    Accepted(proposal, value.to_vec().into()),
                 ))
             }
             WhichMsg::Reject(reject) => {
@@ -148,7 +149,7 @@ impl MultiPaxosMessage {
             WhichMsg::Catchup(catchup) => {
                 let catchup = catchup?;
                 let value = catchup.get_value()?;
-                Ok(MultiPaxosMessage::Catchup(inst, value.to_vec()))
+                Ok(MultiPaxosMessage::Catchup(inst, value.to_vec().into()))
             }
         }
     }

@@ -596,7 +596,7 @@ mod tests {
             quorum: 2,
         };
 
-        let prepare = proposer.propose_value(vec![0x0u8, 0xffu8]);
+        let prepare = proposer.propose_value(vec![0x0u8, 0xffu8].into());
         assert_matches!(prepare, Some(Either::Left(Prepare(Ballot(0, 1)))));
         assert_matches!(
             proposer.state,
@@ -610,7 +610,7 @@ mod tests {
         );
 
         // now propose another value (should be ignored)
-        let prepare = proposer.propose_value(vec![0xeeu8, 0xeeu8]);
+        let prepare = proposer.propose_value(vec![0xeeu8, 0xeeu8].into());
         assert_matches!(prepare, None);
         assert_matches!(
             proposer.state,
@@ -619,7 +619,7 @@ mod tests {
                 highest_accepted: None,
                 value: Some(ref v),
                 ..
-            } if v == &vec![0x0u8, 0xffu8]
+            } if v == &vec![0x0u8, 0xffu8].into()
         );
 
         // propose value with producer that has started phase 1 (but no value has been proposed)
@@ -631,7 +631,7 @@ mod tests {
         };
 
         proposer.prepare(None);
-        proposer.propose_value(vec![0xfeu8]);
+        proposer.propose_value(vec![0xfeu8].into());
 
         assert_matches!(
             proposer.state,
@@ -640,7 +640,7 @@ mod tests {
                 highest_accepted: None,
                 value: Some(ref v),
                 ..
-            } if v == &vec![0xfeu8]
+            } if v == &vec![0xfeu8].into()
         );
 
         // propose value with producer that has completed Phase 1
@@ -656,10 +656,10 @@ mod tests {
             quorum: 2,
         };
 
-        let accept = proposer.propose_value(vec![0x22u8]);
+        let accept = proposer.propose_value(vec![0x22u8].into());
         assert_matches!(
             accept,
-            Some(Either::Right(Accept(Ballot(0, 1), ref v))) if v == &vec![0x22u8]
+            Some(Either::Right(Accept(Ballot(0, 1), ref v))) if v == &vec![0x22u8].into()
         );
 
         assert_matches!(
@@ -668,11 +668,11 @@ mod tests {
                 proposal: Ballot(0, 1),
                 value: Some(ref v),
                 ..
-            } if v == &vec![0x22u8]
+            } if v == &vec![0x22u8].into()
         );
 
         // now try to propose an alternate value, which should be rejected
-        let res = proposer.propose_value(vec![0x33u8]);
+        let res = proposer.propose_value(vec![0x33u8].into());
         assert_matches!(res, None);
         assert_matches!(
             proposer.state,
@@ -680,7 +680,7 @@ mod tests {
                 proposal: Ballot(0, 1),
                 value: Some(ref v),
                 ..
-            } if v == &vec![0x22u8]
+            } if v == &vec![0x22u8].into()
         );
     }
 
@@ -749,7 +749,7 @@ mod tests {
             quorum: 2,
         };
 
-        proposer.propose_value(vec![0x1u8]);
+        proposer.propose_value(vec![0x1u8].into());
         assert_matches!(
             proposer.state,
             ProposerState::Candidate {
@@ -766,7 +766,7 @@ mod tests {
         let accept = proposer.receive_promise(2, Promise(Ballot(101, 1), None));
         assert_matches!(
             accept,
-            Some(Accept(Ballot(101, 1), ref v)) if v == &vec![0x1u8]
+            Some(Accept(Ballot(101, 1), ref v)) if v == &vec![0x1u8].into()
         );
 
         // start a producer with proposed value that receives a quorum with and accepted value
@@ -777,7 +777,7 @@ mod tests {
             quorum: 3,
         };
 
-        proposer.propose_value(vec![0x1u8]);
+        proposer.propose_value(vec![0x1u8].into());
         assert_matches!(
             proposer.state,
             ProposerState::Candidate {
@@ -790,7 +790,7 @@ mod tests {
 
         let accept = proposer.receive_promise(
             3,
-            Promise(Ballot(101, 1), Some((Ballot(90, 0), vec![0x4u8]))),
+            Promise(Ballot(101, 1), Some((Ballot(90, 0), vec![0x4u8].into()))),
         );
         assert!(accept.is_none());
         assert_matches!(
@@ -805,7 +805,7 @@ mod tests {
 
         let accept = proposer.receive_promise(
             0,
-            Promise(Ballot(101, 1), Some((Ballot(100, 0), vec![0x8u8]))),
+            Promise(Ballot(101, 1), Some((Ballot(100, 0), vec![0x8u8].into()))),
         );
         assert!(accept.is_none());
         assert_matches!(
@@ -820,11 +820,11 @@ mod tests {
 
         let accept = proposer.receive_promise(
             2,
-            Promise(Ballot(101, 1), Some((Ballot(99, 0), vec![0x9u8]))),
+            Promise(Ballot(101, 1), Some((Ballot(99, 0), vec![0x9u8].into()))),
         );
         assert_matches!(
             accept,
-            Some(Accept(Ballot(101, 1), ref v)) if v == &vec![0x8u8]
+            Some(Accept(Ballot(101, 1), ref v)) if v == &vec![0x8u8].into()
         );
         assert_matches!(
             proposer.state,
@@ -832,7 +832,7 @@ mod tests {
                 proposal: Ballot(101, 1),
                 value: Some(ref v),
                 ..
-            } if v == &vec![0x8u8]
+            } if v == &vec![0x8u8].into()
         );
     }
 
@@ -962,13 +962,13 @@ mod tests {
         assert_matches!(acceptor.promised, Some(Ballot(102, 2)));
 
         // prepare contains last accepted values
-        acceptor.accepted = Some((Ballot(102, 2), vec![0x0, 0x1, 0x2]));
+        acceptor.accepted = Some((Ballot(102, 2), vec![0x0, 0x1, 0x2].into()));
         let res = acceptor.receive_prepare(1, Prepare(Ballot(103, 1)));
         assert!(res.is_left());
         assert_matches!(
             res.left().unwrap(),
             Reply { reply_to: 1, message: Promise(Ballot(103, 1), Some((Ballot(102, 2), ref v))) }
-            if v == &vec![0x0, 0x1, 0x2]
+            if v == &vec![0x0, 0x1, 0x2].into()
         );
         assert_matches!(acceptor.promised, Some(Ballot(103, 1)));
     }
@@ -981,17 +981,17 @@ mod tests {
         };
 
         // acceptor allows ACCEPT without a promise
-        let res = acceptor.receive_accept(1, Accept(Ballot(101, 1), vec![0xee, 0xe0]));
+        let res = acceptor.receive_accept(1, Accept(Ballot(101, 1), vec![0xee, 0xe0].into()));
         assert!(res.is_left());
         assert_matches!(
             res.left().unwrap(),
             Accepted(Ballot(101, 1), ref v)
-            if v == &vec![0xee, 0xe0]
+            if v == &vec![0xee, 0xe0].into()
         );
         assert_matches!(acceptor.promised, Some(Ballot(101, 1)));
 
         // acceptor sends REJECT with ballot less than promised OR accepted
-        let res = acceptor.receive_accept(3, Accept(Ballot(100, 3), vec![0x0]));
+        let res = acceptor.receive_accept(3, Accept(Ballot(100, 3), vec![0x0].into()));
         assert!(res.is_right());
         assert_matches!(
             res.right().unwrap(),
@@ -1013,7 +1013,7 @@ mod tests {
         };
 
         // accepts new ballots
-        let val = vec![0x0u8, 0xeeu8];
+        let val: Value = vec![0x0u8, 0xeeu8].into();
         let resolution = learner.receive_accepted(1, Accepted(Ballot(100, 0), val.clone()));
         assert!(resolution.is_none());
         assert_matches!(
@@ -1047,7 +1047,7 @@ mod tests {
         );
 
         // ignores other ballots once quorum reached
-        let resolution = learner.receive_accepted(3, Accepted(Ballot(90, 0), vec![0x0]));
+        let resolution = learner.receive_accepted(3, Accepted(Ballot(90, 0), vec![0x0].into()));
         assert!(resolution.is_some());
         assert_matches!(
             resolution.unwrap(),

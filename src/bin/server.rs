@@ -5,9 +5,11 @@ extern crate paxos;
 extern crate tokio_core;
 extern crate tokio_io;
 
+use std::borrow::Borrow;
 use std::env::args;
 use std::net::SocketAddr;
 use std::net::Ipv4Addr;
+use std::str;
 use futures::{Future, Stream};
 use tokio_core::net::TcpListener;
 use tokio_core::reactor::Handle;
@@ -61,14 +63,19 @@ fn spawn_client_handler(
                         _ => None,
                     })
                 };
+
                 match cmd {
                     Some(Command::Get) => match register.snapshot(0) {
-                        Some(v) => String::from_utf8(v)
-                            .unwrap_or_else(|_| "ERR: Value not UTF-8".to_string()),
+                        Some(v) => {
+                            let v: &[u8] = v.borrow();
+                            str::from_utf8(v)
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|_| "ERR: Value not UTF-8".to_string())
+                        }
                         None => "ERR: No Value".to_string(),
                     },
                     Some(Command::Propose) => {
-                        let value = req.split_off(8).into_bytes();
+                        let value = req.split_off(8).into();
                         proposals
                             .propose(value)
                             .map(|_| "OK".to_string())

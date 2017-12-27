@@ -1,7 +1,10 @@
 mod messages;
 mod instance;
 
+
 use std::cmp::Ordering;
+use std::rc::Rc;
+use std::ops::Deref;
 pub use self::instance::PaxosInstance;
 pub use self::messages::*;
 
@@ -45,8 +48,29 @@ impl Ord for Ballot {
 /// within the configuration.
 pub type NodeId = u32;
 
-// TODO: parameterize Value within PaxosInstance
-pub type Value = Vec<u8>;
+/// Command value that the cluster members agree upon to reach consensus.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Value(Rc<[u8]>);
+
+impl From<Vec<u8>> for Value {
+    fn from(vec: Vec<u8>) -> Value {
+        Value(vec.into_boxed_slice().into())
+    }
+}
+
+impl From<String> for Value {
+    fn from(s: String) -> Value {
+        Value(s.into_boxed_str().into_boxed_bytes().into())
+    }
+}
+
+impl Deref for Value {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.0.deref()
+    }
+}
 
 /// `QuorumSet` tracks nodes that have sent certain messages and will
 /// detect when quorum is reached. Duplicates are treated as a single
@@ -88,7 +112,7 @@ impl QuorumSet {
     pub fn remove(&mut self, n: NodeId) {
         let loc = self.values.binary_search(&n);
         if let Ok(ind) = loc {
-           self.values.remove(ind);
+            self.values.remove(ind);
         }
     }
 
