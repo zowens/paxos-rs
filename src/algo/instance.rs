@@ -270,6 +270,9 @@ impl Acceptor {
         prepare: Prepare,
     ) -> Either<Reply<Promise>, Reply<Reject>> {
         let Prepare(proposal) = prepare;
+
+        debug_assert_eq!(peer, proposal.1, "Proposal should be from the same numbered peer");
+
         let opposing_ballot = self.promised.filter(|b| b > &proposal);
 
         match opposing_ballot {
@@ -426,7 +429,7 @@ impl Learner {
                 }
 
                 // insert the ACCEPTED as part of the ballot
-                debug!("ACCEPTED for {:?}", proposal);
+                debug!("Accepted {:?} for peer={}", proposal, peer);
                 let quorum = self.quorum;
                 let mut proposal_status = proposals.entry(proposal).or_insert_with(|| {
                     ProposalStatus {
@@ -435,7 +438,7 @@ impl Learner {
                     }
                 });
 
-                assert_eq!(
+                debug_assert_eq!(
                     value,
                     proposal_status.value,
                     "Values for acceptor value does not match value from ACCEPTED message"
@@ -529,7 +532,15 @@ impl PaxosInstance {
 
     /// Handler for a PROMISE from a peer. An ACCEPT message is returned if quorum is detected.
     pub fn receive_promise(&mut self, peer: NodeId, promise: Promise) -> Option<Accept> {
-        self.proposer.receive_promise(peer, promise)
+        match self.proposer.receive_promise(peer, promise) {
+            Some(accept) => {
+                // track the proposer as accepting the ballot
+                self.learner
+                    .receive_accepted(self.proposer.current, Accepted(accept.0, accept.1.clone()));
+                Some(accept)
+            }
+            None => None,
+        }
     }
 
     /// Handler for REJECT from an acceptor peer. Phase 1 with a higher ballot is returned
