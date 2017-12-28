@@ -1,4 +1,4 @@
-#![feature(option_filter)]
+#![feature(test, option_filter)]
 #![allow(unknown_lints)]
 #[cfg(test)]
 #[macro_use]
@@ -11,6 +11,8 @@ extern crate futures_timer;
 #[macro_use]
 extern crate log;
 extern crate rand;
+#[cfg(test)]
+extern crate test;
 extern crate tokio_core;
 
 mod algo;

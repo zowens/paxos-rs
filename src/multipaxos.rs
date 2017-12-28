@@ -35,6 +35,7 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
     downstream_stream: UnboundedReceiver<ClusterMessage>,
 
     // proposals received async
+    // TODO: bound the number of in-flight proposals, possible batching
     proposal_sink: UnboundedSender<Value>,
     proposal_stream: UnboundedReceiver<Value>,
 
