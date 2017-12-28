@@ -3,7 +3,7 @@ use super::{Ballot, NodeId, Value};
 
 /// `PREPARE` message is the Phase 1a message from a proposer sent
 /// to acceptors to receive agreement to not accept ballots of lower value.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Prepare(pub Ballot);
 
 /// `ACCEPT` message is the Phase 2a message from a proposer sent
@@ -18,7 +18,7 @@ pub type ProposerMsg = Either<Prepare, Accept>;
 /// `PROMISE` is the Phase 1b message sent from acceptors in reply to
 /// `PREPARE` messages. The ballot in the promise denotes that the acceptor
 /// will not accept ballots less than the promised ballot.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Promise(pub Ballot, pub Option<(Ballot, Value)>);
 
 impl Promise {
@@ -35,7 +35,7 @@ impl Promise {
 /// `REJECT` is sent from an acceptor in reply to a proposer
 /// when a ballot is being proposed or seen in an `ACCEPT` message that
 /// preceeds the last promised value from the acceptor.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Reject(pub Ballot, pub Ballot);
 
 impl Reject {
@@ -53,15 +53,15 @@ impl Reject {
 
 /// `ACCEPTED` is the Phase 2b message that is broadcast from acceptors
 /// denoting acceptance of a value.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Accepted(pub Ballot, pub Value);
 
 /// `RESOLUTION` is the result of a quorum of `ACCEPTED` messages being received.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Resolution(pub Ballot, pub Value);
 
 /// Struct containing the node and message for a single destination.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Reply<M> {
     /// Node identifier that should be sent the reply
     pub reply_to: NodeId,
