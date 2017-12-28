@@ -168,7 +168,7 @@ impl Proposer {
             }
             _ => false,
         };
-        // TODO: should we actually send out another prepare here?
+
         if lost_leadership {
             debug!("Lost leadership, restarting prepare");
             Some(self.force_prepare())
@@ -277,7 +277,7 @@ impl Acceptor {
             "Proposal should be from the same numbered peer"
         );
 
-        let opposing_ballot = self.promised.filter(|b| b > &proposal);
+        let opposing_ballot = self.promised.filter(|b| *b > proposal);
 
         match opposing_ballot {
             Some(b) => {
@@ -362,10 +362,6 @@ enum LearnerState {
         accepted: Ballot,
         /// Accepted value
         value: Value,
-        /// Acceptors that sent ACCEPTED.
-        ///
-        /// (INVARIANT: acceptors will be a quorum)
-        acceptors: QuorumSet,
     },
 }
 
@@ -383,7 +379,7 @@ impl Learner {
     fn receive_accepted(&mut self, peer: NodeId, accepted: Accepted) -> Option<Resolution> {
         let Accepted(proposal, value) = accepted;
 
-        let final_acceptors = match self.state {
+        match self.state {
             // a learner awaiting quorum is waiting for a majority
             // of acceptors to finish Phase 2 and send the ACCEPTED
             // message (Phase 2b)
@@ -451,26 +447,14 @@ impl Learner {
 
                 // if learner has has quorum of ACCEPTED messages, transition to final
                 // otherwise no resolution has been reached
-                if proposal_status.acceptors.has_quorum() {
-                    proposal_status.acceptors.clone()
-                } else {
+                if !proposal_status.acceptors.has_quorum() {
                     return None;
                 }
             }
             LearnerState::Final {
                 accepted,
                 ref value,
-                ref mut acceptors,
             } => {
-                assert!(
-                    acceptors.has_quorum(),
-                    "A quorum should have been reached for final value"
-                );
-
-                // TODO: why is this >= and not ==?
-                if proposal >= accepted {
-                    acceptors.insert(peer);
-                }
                 return Some(Resolution(accepted, value.clone()));
             }
         };
@@ -479,7 +463,6 @@ impl Learner {
 
         // a final value has been selected, move the state to final
         self.state = LearnerState::Final {
-            acceptors: final_acceptors,
             value: value.clone(),
             accepted: proposal,
         };
@@ -515,7 +498,7 @@ impl PaxosInstance {
             acceptor: Acceptor { promised, accepted },
             learner: Learner {
                 state: LearnerState::AwaitQuorum {
-                    proposals: HashMap::new(),
+                    proposals: HashMap::with_capacity(quorum * 2),
                     acceptors: HashMap::with_capacity(quorum * 2),
                 },
                 quorum,
@@ -1089,10 +1072,8 @@ mod tests {
             paxos.learner.state,
             LearnerState::Final {
                 accepted: Ballot(100, 0),
-                ref acceptors,
                 ..
             }
-            if acceptors.contains(4)
         );
     }
 }
