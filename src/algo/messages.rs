@@ -24,7 +24,7 @@ pub struct Promise(pub Ballot, pub Option<(Ballot, Value)>);
 impl Promise {
     /// Creates a reply for the `PROMISE`. Promises are returned to the
     /// proposer that originally sent the `PREPARE`.
-    pub fn reply_to(self, node: NodeId) -> Reply<Promise> {
+    pub(crate) fn reply_to(self, node: NodeId) -> Reply<Promise> {
         Reply {
             reply_to: node,
             message: self,
@@ -33,8 +33,8 @@ impl Promise {
 }
 
 /// `REJECT` is sent from an acceptor in reply to a proposer
-/// when a ballot is being proposed or seen in an `ACCEPT` message that
-/// preceeds the last promised value from the acceptor.
+/// when a ballot is being proposed in a `PREPARE` message or seen in an
+/// `ACCEPT` message that preceeds the last promised value from the acceptor.
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Reject(pub Ballot, pub Ballot);
 
@@ -42,7 +42,7 @@ impl Reject {
     /// Creates a reply for a `PROMISE` or `ACCEPT` to the proposer
     /// that originated a message with a ballot that preceeded the last
     /// promised.
-    pub fn reply_to(self, node: NodeId) -> Reply<Reject> {
+    pub(crate) fn reply_to(self, node: NodeId) -> Reply<Reject> {
         Reply {
             reply_to: node,
             message: self,

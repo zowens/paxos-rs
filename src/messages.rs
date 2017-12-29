@@ -1,9 +1,10 @@
+//! Messages sent within the cluster of nodes.
 use std::io;
 use std::net::SocketAddr;
 
 use super::Instance;
-pub use algo::{Accept, Accepted, Ballot, NodeId, Prepare, Promise, Reject};
-use algo::Value;
+pub use algo::{Accept, Accepted, Ballot, Prepare, Promise, Reject};
+use algo::{NodeId, Value};
 
 use capnp::{Error as CapnpError, NotInSchema};
 use capnp::message::{Builder, HeapAllocator, ReaderOptions};
@@ -32,8 +33,8 @@ pub enum MultiPaxosMessage {
     Accepted(Instance, Accepted),
 
     /// `REJECT` is sent from an acceptor in reply to a proposer
-    /// when a ballot is being proposed or seen in an `ACCEPT` message that
-    /// preceeds the last promised value from the acceptor.
+    /// when a ballot is being proposed in a `PREPARE` message or seen in an
+    /// `ACCEPT` message that preceeds the last promised value from the acceptor.
     Reject(Instance, Reject),
 
     /// Request sent to a random node to get the latest value
@@ -242,7 +243,7 @@ impl MultiPaxosMessage {
     }
 }
 
-/// Message sent over the network
+/// Message sent over the network.
 pub struct NetworkMessage {
     /// Address of the receiptient or destination of the message
     pub address: SocketAddr,
@@ -250,7 +251,7 @@ pub struct NetworkMessage {
     pub message: MultiPaxosMessage,
 }
 
-/// Message sent to a peer node in the cluster
+/// Message sent to a peer node in the cluster.
 pub struct ClusterMessage {
     /// Address of the receiptient or destination of the message
     pub peer: NodeId,

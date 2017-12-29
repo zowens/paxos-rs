@@ -1,5 +1,25 @@
 #![feature(test, option_filter)]
 #![allow(unknown_lints)]
+//! Rust implementation of the Paxos algorithm for replicated state machines.
+//!
+//! The implementation of multi-decree paxos uses multiple instances of the Paxos consus algorithm
+//! to chain together commands against the replicated state machine.
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! # use paxos::{Register, MultiPaxos, Configuration, UdpServer};
+//! let register = Register::default();
+//! let config = Configuration::new(
+//!     (0u32, "127.0.0.1:4000".parse().unwrap()),
+//!     vec![(1, "127.0.0.1:4001".parse().unwrap()),
+//!          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
+//!
+//! let multipaxos = MultiPaxos::new(register, config.clone()).into_networked();
+//!
+//! let server = UdpServer::new(&config).unwrap();
+//! server.run(multipaxos).unwrap();
+//! ```
 #[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
@@ -25,7 +45,7 @@ mod register;
 mod config;
 mod timer;
 
-pub use multipaxos::{MultiPaxos, ProposalSender};
+pub use multipaxos::{MultiPaxos, NetworkedMultiPaxos, ProposalSender};
 pub use statemachine::ReplicatedState;
 pub use net::UdpServer;
 pub use register::Register;

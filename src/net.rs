@@ -36,13 +36,15 @@ impl UdpCodec for MultiPaxosCodec {
     }
 }
 
-/// Server that runs multi-paxos.
+/// Server that runs a multi-paxos node over the network with UDP.
 pub struct UdpServer {
     core: Core,
     framed: UdpFramed<MultiPaxosCodec>,
 }
 
 impl UdpServer {
+    /// Creates a new `UdpServer` with the address of the node
+    /// specified in the configuration.
     pub fn new(config: &Configuration) -> io::Result<UdpServer> {
         let core = Core::new()?;
         let handle = core.handle();
@@ -52,10 +54,13 @@ impl UdpServer {
         Ok(UdpServer { core, framed })
     }
 
+    /// Gets a handle in order to spawn additional futures other than the multi-paxos
+    /// node. For example, a client-facing protocol can be spawned with a handle.
     pub fn handle(&self) -> Handle {
         self.core.handle()
     }
 
+    /// Runs a multi-paxos node, blocking until the program is terminated.
     pub fn run<S: 'static>(mut self, upstream: S) -> Result<(), ()>
     where
         S: Stream<Item = NetworkMessage, Error = io::Error>,

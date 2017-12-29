@@ -29,6 +29,8 @@ cargo build --release
 ./target/release/client propose "hello world"
 
 # GET the current value from each of the nodes
+# 
+# NOTE: The read is currently not serialized
 ./target/release/client get
 ./target/release/client -n 1 get
 ./target/release/client -n 2 get
@@ -40,14 +42,16 @@ cargo build --release
     - [ ] Persistent Storage
 - [ ] Multi-Paxos
     - [X] Masterless
-    - [ ] Master Lease
+    - [ ] Master Leases
+        - [ ] Distinguished Proposer
+        - [ ] Distinguished Learner
     - [ ] Reconfiguration
         - [ ] Member-specific state machine
-        - [ ] Learners
+        - [ ] Learners ("observers")
     - [ ] Client Protocol
         - [ ] Membership-aware protocol
 - [ ] Generalize State Machine
-    - [ ] Mutable Register
+    - [X] Mutable Register
     - [ ] Asynchronous Finate State Machine
     - [ ] Durable Log
 - [ ] Variants
@@ -56,13 +60,14 @@ cargo build --release
     - [ ] Mencius
     - [ ] WPaxos
 - [ ] Engineering
+    - [ ] Generic command and value types
     - [ ] Reject for wrong instance (rather than ignore)
     - [ ] Jepsen Testing
     - [ ] Configuration of timeouts and other internals
     - [ ] UDP vs. TCP
     - [ ] Multi-Core Server
     - [ ] Rich client library and cli
-    - [ ] RDMA
+    - [ ] RDMA, DPDK
 
 ## References
 * [Paxos Variants](http://paxos.systems/variants.html#mencius)

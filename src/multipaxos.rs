@@ -24,6 +24,18 @@ use timer::*;
 /// `MultiPaxos` is both a `futures::Stream` and `futures::Sink`. It takes in messages
 /// and produces messages for other actors within the system. The algorithm itself
 /// is separated from any networking concerns.
+///
+/// # Example
+///
+/// ```rust
+/// # use paxos::{Register, MultiPaxos, Configuration};
+/// let register = Register::default();
+/// let config = Configuration::new(
+///     (0u32, "127.0.0.1:4000".parse().unwrap()),
+///     vec![(1, "127.0.0.1:4001".parse().unwrap()),
+///          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
+/// let multipaxos = MultiPaxos::new(register, config);
+/// ```
 pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
     state_machine: R,
     state_handler: StateHandler,
@@ -48,16 +60,26 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
 }
 
 impl<R: ReplicatedState> MultiPaxos<R, FuturesScheduler> {
+    /// Creates a multi-paxos node.
+    ///
+    /// # Arguments
+    /// * `state_machine` - The finite state machine used to apply decided commands.
+    /// * `config` - The initial membership of the cluster in which the node participats.
     pub fn new(state_machine: R, config: Configuration) -> MultiPaxos<R, FuturesScheduler> {
-        MultiPaxos::with_scheduler(state_machine, FuturesScheduler, config)
+        MultiPaxos::with_scheduler(FuturesScheduler, state_machine, config)
     }
 }
 
 impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
-    /// Creates a new multi-paxos machine
+    /// Creates a multi-paxos node.
+    ///
+    /// # Arguments
+    /// * `scheduler` - Custom scheduler used to schedule delayed tasks.
+    /// * `state_machine` - The finite state machine used to apply decided commands.
+    /// * `config` - The initial membership of the cluster in which the node participats.
     pub fn with_scheduler(
-        mut state_machine: R,
         scheduler: S,
+        mut state_machine: R,
         config: Configuration,
     ) -> MultiPaxos<R, S> {
         let mut state_handler = StateHandler::new();
@@ -478,6 +500,7 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
     }
 }
 
+/// Multi-paxos node that receives and sends nodes over a network.
 pub struct NetworkedMultiPaxos<R: ReplicatedState, S: Scheduler> {
     multipaxos: MultiPaxos<R, S>,
 }
@@ -543,6 +566,7 @@ pub struct ProposalSender {
 }
 
 impl ProposalSender {
+    /// Sends a proposal to the current node.
     pub fn propose(&self, value: Value) -> io::Result<()> {
         self.sink.unbounded_send(value).map_err(|_| {
             io::Error::new(
