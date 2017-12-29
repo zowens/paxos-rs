@@ -1,5 +1,6 @@
 use std::cmp::min;
 use std::io;
+use std::mem;
 use std::time::Duration;
 use futures::{Async, Poll, Stream};
 use futures::task;
@@ -38,12 +39,50 @@ impl Scheduler for FuturesScheduler {
     }
 }
 
+enum TimerState<S: Scheduler, M: Clone> {
+    Empty,
+    Scheduled(S::Stream, M),
+    Parked(task::Task),
+}
+
+impl<S: Scheduler, M: Clone> TimerState<S, M> {
+    fn poll_stream(&mut self) -> Poll<Option<M>, io::Error> {
+        match *self {
+            TimerState::Scheduled(ref mut s, ref m) => match s.poll()? {
+                Async::Ready(Some(())) => Ok(Async::Ready(Some(m.clone()))),
+                Async::Ready(None) => unreachable!("Infinite stream from Scheduler terminated"),
+                Async::NotReady => Ok(Async::NotReady),
+            },
+            // otherwise, park the current task
+            // TODO: do we need to re-park?
+            _ => {
+                *self = TimerState::Parked(task::current());
+                Ok(Async::NotReady)
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        if let TimerState::Scheduled(..) = *self {
+            *self = TimerState::Empty;
+        }
+
+    }
+
+    fn put_message(&mut self, s: S::Stream, msg: M) {
+        let mut m = TimerState::Scheduled(s, msg);
+        mem::swap(self, &mut m);
+        if let TimerState::Parked(t) = m {
+            t.notify();
+        }
+    }
+}
+
 /// Timer that will resend a message to the downstream peers in order
 /// to drive consensus.
 pub struct RetransmitTimer<S: Scheduler> {
     scheduler: S,
-    msg: Option<(Instance, ProposerMsg, S::Stream)>,
-    parked_receive: Option<task::Task>,
+    state: TimerState<S, (Instance, ProposerMsg)>,
 }
 
 impl<S> RetransmitTimer<S>
@@ -53,29 +92,22 @@ where
     pub fn new(scheduler: S) -> RetransmitTimer<S> {
         RetransmitTimer {
             scheduler,
-            msg: None,
-            parked_receive: None,
+            state: TimerState::Empty,
         }
     }
 
     /// Clears the current timer
     pub fn reset(&mut self) {
-        self.msg = None;
+        self.state.reset();
     }
 
     /// Schedules a message for resend
     pub fn schedule(&mut self, inst: Instance, msg: ProposerMsg) {
         trace!("Scheduling retransmit");
-        self.msg = Some((
-            inst,
-            msg,
+        self.state.put_message(
             self.scheduler.interval(Duration::from_millis(1000)),
-        ));
-
-        // notify any parked receive
-        if let Some(task) = self.parked_receive.take() {
-            task.notify();
-        }
+            (inst, msg),
+        );
     }
 }
 
@@ -84,27 +116,17 @@ impl<S: Scheduler> Stream for RetransmitTimer<S> {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<(Instance, ProposerMsg)>, io::Error> {
-        match self.msg.as_mut() {
-            Some(&mut (inst, ref msg, ref mut f)) => match f.poll()? {
-                Async::Ready(Some(())) => Ok(Async::Ready(Some((inst, msg.clone())))),
-                Async::Ready(None) => unreachable!("Infinite stream from Scheduler terminated"),
-                Async::NotReady => Ok(Async::NotReady),
-            },
-            None => {
-                self.parked_receive = Some(task::current());
-                Ok(Async::NotReady)
-            }
-        }
+        self.state.poll_stream()
     }
 }
+
 
 /// Timer that allows the node to re-enter Phase 1 in order to
 /// drive resolution with a higher ballot.
 pub struct InstanceResolutionTimer<S: Scheduler> {
     scheduler: S,
     backoff_ms: u64,
-    stream: Option<(Instance, S::Stream)>,
-    parked_receive: Option<task::Task>,
+    state: TimerState<S, Instance>,
 }
 
 impl<S: Scheduler> InstanceResolutionTimer<S> {
@@ -112,8 +134,7 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
         InstanceResolutionTimer {
             scheduler,
             backoff_ms: RESOLUTION_STARTING_MS,
-            stream: None,
-            parked_receive: None,
+            state: TimerState::Empty,
         }
     }
 
@@ -124,15 +145,11 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
         trace!("Scheduling PREPARE takeover timeout");
 
         // TODO: do we want to add some Jitter?
-        self.stream = Some((
-            inst,
+        self.state.put_message(
             self.scheduler
                 .interval(Duration::from_millis(RESOLUTION_SILENCE_TIMEOUT)),
-        ));
-
-        if let Some(task) = self.parked_receive.take() {
-            task.notify();
-        }
+            inst,
+        );
     }
 
     /// Schedules a timer to schedule retry of the round with a higher ballot.
@@ -141,21 +158,18 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
         self.backoff_ms = min(self.backoff_ms * 2, RESOLUTION_MAX_MS);
 
         let jitter_retry_ms = thread_rng().gen_range(RESOLUTION_STARTING_MS, self.backoff_ms + 1);
-        self.stream = Some((
-            inst,
+
+        self.state.put_message(
             self.scheduler
                 .interval(Duration::from_millis(jitter_retry_ms)),
-        ));
-
-        if let Some(task) = self.parked_receive.take() {
-            task.notify();
-        }
+            inst,
+        );
     }
 
     /// Clears the current timer
     pub fn reset(&mut self) {
         self.backoff_ms = RESOLUTION_STARTING_MS;
-        self.stream = None;
+        self.state.reset();
     }
 }
 
@@ -164,17 +178,7 @@ impl<S: Scheduler> Stream for InstanceResolutionTimer<S> {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Instance>, io::Error> {
-        match self.stream.as_mut() {
-            Some(&mut (inst, ref mut f)) => match f.poll()? {
-                Async::Ready(Some(())) => Ok(Async::Ready(Some(inst))),
-                Async::Ready(None) => unreachable!("Infinite stream from Scheduler terminated"),
-                Async::NotReady => Ok(Async::NotReady),
-            },
-            None => {
-                self.parked_receive = Some(task::current());
-                Ok(Async::NotReady)
-            }
-        }
+        self.state.poll_stream()
     }
 }
 
