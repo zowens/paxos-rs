@@ -66,7 +66,6 @@ impl<S: Scheduler, M: Clone> TimerState<S, M> {
         if let TimerState::Scheduled(..) = *self {
             *self = TimerState::Empty;
         }
-
     }
 
     fn put_message(&mut self, s: S::Stream, msg: M) {

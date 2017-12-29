@@ -1,4 +1,6 @@
+use std::collections::VecDeque;
 use std::io;
+use futures::task;
 use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
 use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use either::Either;
@@ -31,8 +33,8 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
     config: Configuration,
 
     // downstream is sent out from this node
-    downstream_sink: UnboundedSender<ClusterMessage>,
-    downstream_stream: UnboundedReceiver<ClusterMessage>,
+    downstream: VecDeque<ClusterMessage>,
+    downstream_blocked: Option<task::Task>,
 
     // proposals received async
     // TODO: bound the number of in-flight proposals, possible batching
@@ -72,7 +74,6 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             state_machine.apply_value(state.instance, v);
         }
 
-        let (downstream_sink, downstream_stream) = unbounded::<ClusterMessage>();
         let (proposal_sink, proposal_stream) = unbounded::<Value>();
 
         let retransmit_timer = RetransmitTimer::new(scheduler.clone());
@@ -85,8 +86,8 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             instance: state.instance,
             paxos,
             config,
-            downstream_sink,
-            downstream_stream,
+            downstream: VecDeque::new(),
+            downstream_blocked: None,
             proposal_sink,
             proposal_stream,
             retransmit_timer,
@@ -129,43 +130,66 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     #[inline]
-    fn send_multipaxos(&self, peer: NodeId, message: MultiPaxosMessage) {
-        trace!("Sending message to peer={}: {:?}", peer, message);
-        self.downstream_sink
-            .unbounded_send(ClusterMessage { peer, message })
-            .unwrap();
+    fn send_multipaxos(&mut self, peer: NodeId, message: MultiPaxosMessage) {
+        debug!("[SEND] peer={} : {:?}", peer, message);
+        self.downstream.push_back(ClusterMessage { peer, message });
+
+        if let Some(task) = self.downstream_blocked.take() {
+            task.notify();
+        }
     }
 
     /// Broadcasts PREPARE messages to all peers
     fn send_prepare(&mut self, prepare: &Prepare) {
+        debug!("[BROADCAST] : {:?}", prepare);
+
         let peers = self.config.peers();
-        for peer in &peers {
-            self.send_multipaxos(
+        let inst = self.instance;
+        self.downstream.extend(peers.into_iter().map(move |peer| {
+            ClusterMessage {
                 peer,
-                MultiPaxosMessage::Prepare(self.instance, prepare.clone()),
-            );
+                message: MultiPaxosMessage::Prepare(inst, prepare.clone()),
+            }
+        }));
+
+        if let Some(task) = self.downstream_blocked.take() {
+            task.notify();
         }
     }
 
     /// Broadcasts ACCEPT messages to all peers
     fn send_accept(&mut self, accept: &Accept) {
+        debug!("[BROADCAST] : {:?}", accept);
+
         let peers = self.config.peers();
-        for peer in &peers {
-            self.send_multipaxos(
+        let inst = self.instance;
+        self.downstream.extend(peers.into_iter().map(move |peer| {
+            ClusterMessage {
                 peer,
-                MultiPaxosMessage::Accept(self.instance, accept.clone()),
-            );
+                message: MultiPaxosMessage::Accept(inst, accept.clone()),
+            }
+        }));
+
+        if let Some(task) = self.downstream_blocked.take() {
+            task.notify();
         }
     }
 
     /// Broadcasts ACCEPTED messages to all peers
     fn send_accepted(&mut self, accepted: &Accepted) {
+        debug!("[BROADCAST] : {:?}", accepted);
+
+        let inst = self.instance;
         let peers = self.config.peers();
-        for peer in &peers {
-            self.send_multipaxos(
+        self.downstream.extend(peers.into_iter().map(move |peer| {
+            ClusterMessage {
                 peer,
-                MultiPaxosMessage::Accepted(self.instance, accepted.clone()),
-            );
+                message: MultiPaxosMessage::Accepted(inst, accepted.clone()),
+            }
+        }));
+
+        if let Some(task) = self.downstream_blocked.take() {
+            task.notify();
         }
     }
 
@@ -226,7 +250,8 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     fn poll_syncronization(&mut self) {
         if let Some(node) = self.config.random_peer() {
             debug!("Sending SYNC request");
-            self.send_multipaxos(node, MultiPaxosMessage::Sync(self.instance));
+            let inst = self.instance;
+            self.send_multipaxos(node, MultiPaxosMessage::Sync(inst));
         }
     }
 
@@ -239,7 +264,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         match self.paxos.receive_prepare(peer, prepare) {
             Either::Left(promise) => {
                 self.state_handler.persist(State {
-                    instance: self.instance,
+                    instance: inst,
                     current_value: self.state_machine.snapshot(inst).clone(),
                     promised: Some(promise.message.0),
                     accepted: promise.message.1.clone(),
@@ -247,13 +272,13 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
                 self.send_multipaxos(
                     promise.reply_to,
-                    MultiPaxosMessage::Promise(self.instance, promise.message),
+                    MultiPaxosMessage::Promise(inst, promise.message),
                 );
             }
             Either::Right(reject) => {
                 self.send_multipaxos(
                     reject.reply_to,
-                    MultiPaxosMessage::Reject(self.instance, reject.message),
+                    MultiPaxosMessage::Reject(inst, reject.message),
                 );
             }
         }
@@ -297,7 +322,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         }
 
         match self.paxos.receive_accept(peer, accept) {
-            Either::Left(accepted) => {
+            Either::Left((accepted, None)) => {
                 self.state_handler.persist(State {
                     instance: self.instance,
                     current_value: self.state_machine.snapshot(inst).clone(),
@@ -307,10 +332,16 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
                 self.send_accepted(&accepted);
             }
+            Either::Left((accepted, Some(Resolution(_, v)))) => {
+                trace!("Quorum after ACCEPT received");
+
+                self.send_accepted(&accepted);
+                self.advance_instance(inst, v);
+            }
             Either::Right(reject) => {
                 self.send_multipaxos(
                     reject.reply_to,
-                    MultiPaxosMessage::Reject(self.instance, reject.message),
+                    MultiPaxosMessage::Reject(inst, reject.message),
                 );
             }
         }
@@ -349,7 +380,8 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         // The catchup will send the current instance (which may be in-flight)
         // and the value from the last instance.
         if let Some(v) = self.state_machine.snapshot(self.instance - 1) {
-            self.send_multipaxos(peer, MultiPaxosMessage::Catchup(self.instance, v));
+            let inst = self.instance;
+            self.send_multipaxos(peer, MultiPaxosMessage::Catchup(inst, v));
         }
     }
 
@@ -370,7 +402,7 @@ impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
 
     fn start_send(&mut self, msg: ClusterMessage) -> StartSend<ClusterMessage, io::Error> {
         let ClusterMessage { peer, message } = msg;
-        debug!("Received message from peer={}: {:?}", peer, message);
+        debug!("[RECEIVE] peer={}: {:?}", peer, message);
         match message {
             MultiPaxosMessage::Prepare(inst, prepare) => {
                 self.on_prepare(peer, inst, prepare);
@@ -417,30 +449,32 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Option<ClusterMessage>, io::Error> {
         // poll for retransmission
-        if let Some((inst, msg)) = from_poll(self.retransmit_timer.poll())? {
+        while let Some((inst, msg)) = from_poll(self.retransmit_timer.poll())? {
             self.poll_retransmit(inst, msg);
         }
 
         // poll for retry prepare
-        if let Some(inst) = from_poll(self.prepare_timer.poll())? {
+        while let Some(inst) = from_poll(self.prepare_timer.poll())? {
             self.poll_restart_prepare(inst);
         }
 
         // poll for sync
-        if from_poll(self.sync_timer.poll())?.is_some() {
+        while from_poll(self.sync_timer.poll())?.is_some() {
             self.poll_syncronization();
         }
 
         // poll for proposals
-        match self.proposal_stream.poll() {
-            Ok(Async::Ready(Some(value))) => self.propose_update(value),
-            Err(_) => warn!("Error polling for proposals"),
-            _ => {}
+        while let Async::Ready(Some(value)) = self.proposal_stream.poll().unwrap() {
+            self.propose_update(value);
         }
 
-        self.downstream_stream
-            .poll()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "unexpected timer error"))
+        // TODO: ignore messages with inst < current
+        if let Some(v) = self.downstream.pop_front() {
+            Ok(Async::Ready(Some(v)))
+        } else {
+            self.downstream_blocked = Some(task::current());
+            Ok(Async::NotReady)
+        }
     }
 }
 

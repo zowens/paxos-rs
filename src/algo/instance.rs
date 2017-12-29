@@ -311,7 +311,7 @@ impl Acceptor {
                 Either::Right(Reject(proposal, b).reply_to(peer))
             }
             None => {
-                debug!("Accepting proposal {:?}", proposal);
+                debug!("Accepting proposal {:?} from peer={}", proposal, peer);
 
                 // set the accepted value, which is sent to subsequent PROMISE responses
                 // with ballts greater than the current proposal
@@ -591,7 +591,7 @@ impl PaxosInstance {
         &mut self,
         peer: NodeId,
         accept: Accept,
-    ) -> Either<Accepted, Reply<Reject>> {
+    ) -> Either<(Accepted, Option<Resolution>), Reply<Reject>> {
         self.proposer.observe_ballot(accept.0);
         match self.acceptor.receive_accept(peer, accept) {
             Either::Left(accepted) => {
@@ -603,9 +603,12 @@ impl PaxosInstance {
                     resolution.is_none(),
                     "Should not have resolved with a single vote"
                 );
-                Either::Left(accepted)
+
+                // track sender as accepting as well
+                let resolution = self.learner.receive_accepted(peer, accepted.clone());
+                Either::Left((accepted, resolution))
             }
-            v => v,
+            Either::Right(v) => Either::Right(v),
         }
     }
 
@@ -990,14 +993,14 @@ mod tests {
 
     #[test]
     fn receive_accept() {
-        let mut paxos = PaxosInstance::new(0, 2, None, None);
+        let mut paxos = PaxosInstance::new(0, 3, None, None);
 
         // acceptor allows ACCEPT without a promise
         let res = paxos.receive_accept(1, Accept(Ballot(101, 1), vec![0xee, 0xe0].into()));
         assert!(res.is_left());
         assert_eq!(
             res.left().unwrap(),
-            Accepted(Ballot(101, 1), vec![0xee, 0xe0].into())
+            (Accepted(Ballot(101, 1), vec![0xee, 0xe0].into()), None)
         );
         assert_matches!(paxos.acceptor.promised, Some(Ballot(101, 1)));
 
@@ -1011,6 +1014,18 @@ mod tests {
                 message: Reject(Ballot(100, 3), Ballot(101, 1)),
             }
         );
+
+        // acceptor allows ACCEPT to quorum
+        let res = paxos.receive_accept(2, Accept(Ballot(101, 1), vec![0xee, 0xe0].into()));
+        assert!(res.is_left());
+        assert_eq!(
+            res.left().unwrap(),
+            (
+                Accepted(Ballot(101, 1), vec![0xee, 0xe0].into()),
+                Some(Resolution(Ballot(101, 1), vec![0xee, 0xe0].into()))
+            )
+        );
+        assert_matches!(paxos.acceptor.promised, Some(Ballot(101, 1)));
     }
 
     #[test]
