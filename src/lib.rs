@@ -8,14 +8,15 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! # use paxos::{Register, MultiPaxos, Configuration, UdpServer};
+//! # use paxos::{Register, MultiPaxos, Configuration, UdpServer, proposal_channel};
 //! let register = Register::default();
 //! let config = Configuration::new(
 //!     (0u32, "127.0.0.1:4000".parse().unwrap()),
 //!     vec![(1, "127.0.0.1:4001".parse().unwrap()),
 //!          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
 //!
-//! let multipaxos = MultiPaxos::new(register, config.clone()).into_networked();
+//! let (proposal_sink, proposal_stream) = proposal_channel();
+//! let multipaxos = MultiPaxos::new(proposal_stream, register, config.clone()).into_networked();
 //!
 //! let server = UdpServer::new(&config).unwrap();
 //! server.run(multipaxos).unwrap();
@@ -44,14 +45,16 @@ mod net;
 mod register;
 mod config;
 mod timer;
+mod proposals;
 
-pub use multipaxos::{MultiPaxos, NetworkedMultiPaxos, ProposalSender};
+pub use multipaxos::{MultiPaxos, NetworkedMultiPaxos};
 pub use statemachine::ReplicatedState;
 pub use net::UdpServer;
 pub use register::Register;
 pub use config::{Configuration, PeerIntoIter, PeerIter};
 pub use timer::{FuturesScheduler, Scheduler};
 pub use algo::{NodeId, Value};
+pub use proposals::{proposal_channel, ProposalReceiver, ProposalSender};
 
 /// An instance is a _round_ of the Paxos algorithm. Instances are chained to
 /// form a sequence of values. Once an instance receives consensus, the next

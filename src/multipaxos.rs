@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::io;
 use futures::task;
 use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
-use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use either::Either;
 use messages::*;
 use algo::*;
@@ -11,6 +10,7 @@ use state::*;
 use statemachine::*;
 use config::*;
 use timer::*;
+use proposals::*;
 
 /// `MultiPaxos` receives messages and attempts to receive consensus on a replicated
 /// value. Multiple instances of the paxos algorithm are chained together.
@@ -28,13 +28,14 @@ use timer::*;
 /// # Example
 ///
 /// ```rust
-/// # use paxos::{Register, MultiPaxos, Configuration};
+/// # use paxos::{Register, MultiPaxos, Configuration, proposal_channel};
 /// let register = Register::default();
+/// let (proposal_sink, proposal_stream) = proposal_channel();
 /// let config = Configuration::new(
 ///     (0u32, "127.0.0.1:4000".parse().unwrap()),
 ///     vec![(1, "127.0.0.1:4001".parse().unwrap()),
 ///          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
-/// let multipaxos = MultiPaxos::new(register, config);
+/// let multipaxos = MultiPaxos::new(proposal_stream, register, config);
 /// ```
 pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
     state_machine: R,
@@ -49,9 +50,7 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
     downstream_blocked: Option<task::Task>,
 
     // proposals received async
-    // TODO: bound the number of in-flight proposals, possible batching
-    proposal_sink: UnboundedSender<Value>,
-    proposal_stream: UnboundedReceiver<Value>,
+    proposal_receiver: ProposalReceiver,
 
     // timers for driving resolution
     retransmit_timer: RetransmitTimer<S>,
@@ -63,10 +62,15 @@ impl<R: ReplicatedState> MultiPaxos<R, FuturesScheduler> {
     /// Creates a multi-paxos node.
     ///
     /// # Arguments
+    /// * `proposal_receiver` - Stream containing proposals for the node
     /// * `state_machine` - The finite state machine used to apply decided commands.
     /// * `config` - The initial membership of the cluster in which the node participats.
-    pub fn new(state_machine: R, config: Configuration) -> MultiPaxos<R, FuturesScheduler> {
-        MultiPaxos::with_scheduler(FuturesScheduler, state_machine, config)
+    pub fn new(
+        proposal_receiver: ProposalReceiver,
+        state_machine: R,
+        config: Configuration,
+    ) -> MultiPaxos<R, FuturesScheduler> {
+        MultiPaxos::with_scheduler(FuturesScheduler, proposal_receiver, state_machine, config)
     }
 }
 
@@ -75,10 +79,12 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     ///
     /// # Arguments
     /// * `scheduler` - Custom scheduler used to schedule delayed tasks.
+    /// * `proposal_receiver` - Stream containing proposals for the node
     /// * `state_machine` - The finite state machine used to apply decided commands.
     /// * `config` - The initial membership of the cluster in which the node participats.
     pub fn with_scheduler(
         scheduler: S,
+        proposal_receiver: ProposalReceiver,
         mut state_machine: R,
         config: Configuration,
     ) -> MultiPaxos<R, S> {
@@ -96,8 +102,6 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             state_machine.apply_value(state.instance, v);
         }
 
-        let (proposal_sink, proposal_stream) = unbounded::<Value>();
-
         let retransmit_timer = RetransmitTimer::new(scheduler.clone());
         let sync_timer = RandomPeerSyncTimer::new(scheduler.clone());
         let prepare_timer = InstanceResolutionTimer::new(scheduler);
@@ -110,8 +114,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             config,
             downstream: VecDeque::new(),
             downstream_blocked: None,
-            proposal_sink,
-            proposal_stream,
+            proposal_receiver,
             retransmit_timer,
             prepare_timer,
             sync_timer,
@@ -121,13 +124,6 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// Creates stream and sink for network messages.
     pub fn into_networked(self) -> NetworkedMultiPaxos<R, S> {
         NetworkedMultiPaxos { multipaxos: self }
-    }
-
-    /// Creates a sink for proposals
-    pub fn proposal_sender(&self) -> ProposalSender {
-        ProposalSender {
-            sink: self.proposal_sink.clone(),
-        }
     }
 
     /// Moves to the next instance with an accepted value
@@ -486,7 +482,7 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
         }
 
         // poll for proposals
-        while let Async::Ready(Some(value)) = self.proposal_stream.poll().unwrap() {
+        while let Some(value) = from_poll(self.proposal_receiver.poll())? {
             self.propose_update(value);
         }
 
@@ -556,46 +552,5 @@ impl<R: ReplicatedState, S: Scheduler> Stream for NetworkedMultiPaxos<R, S> {
                 }
             }
         }
-    }
-}
-
-/// Sink allowing proposals to be sent to `MultiPaxos`.
-#[derive(Clone)]
-pub struct ProposalSender {
-    sink: UnboundedSender<Value>,
-}
-
-impl ProposalSender {
-    /// Sends a proposal to the current node.
-    pub fn propose(&self, value: Value) -> io::Result<()> {
-        self.sink.unbounded_send(value).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Unexpected error with unbounded sender for proposal",
-            )
-        })
-    }
-}
-
-impl Sink for ProposalSender {
-    type SinkItem = Value;
-    type SinkError = io::Error;
-
-    fn start_send(&mut self, value: Value) -> StartSend<Value, io::Error> {
-        self.sink.start_send(value).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Unexpected error with start_send on unbounded sender for proposal",
-            )
-        })
-    }
-
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
-        self.sink.poll_complete().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Unexpected error with poll_complete on unbounded sender for proposal",
-            )
-        })
     }
 }
