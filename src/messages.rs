@@ -11,7 +11,7 @@ use capnp::message::{Builder, HeapAllocator, ReaderOptions};
 use capnp::serialize_packed::{read_message, write_message};
 use messages_capnp;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 /// Message generated within the cluster.
 pub enum MultiPaxosMessage {
     /// `PREPARE` message is the Phase 1a message from a proposer sent
@@ -252,6 +252,7 @@ pub struct NetworkMessage {
 }
 
 /// Message sent to a peer node in the cluster.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClusterMessage {
     /// Address of the receiptient or destination of the message
     pub peer: NodeId,

@@ -9,7 +9,7 @@ pub struct Prepare(pub Ballot);
 /// `ACCEPT` message is the Phase 2a message from a proposer sent
 /// to acceptors to accept a value. The `ACCEPT` message is predicated
 /// on the proposer receiving quorum from Phase 1.
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Accept(pub Ballot, pub Value);
 
 /// Either of the proposer message values.

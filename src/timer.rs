@@ -108,6 +108,14 @@ where
             (inst, msg),
         );
     }
+
+    #[cfg(test)]
+    pub fn stream(&self) -> Option<&S::Stream> {
+        match self.state {
+            TimerState::Scheduled(ref s, _) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 impl<S: Scheduler> Stream for RetransmitTimer<S> {
@@ -170,6 +178,14 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
         self.backoff_ms = RESOLUTION_STARTING_MS;
         self.state.reset();
     }
+
+    #[cfg(test)]
+    pub fn stream(&self) -> Option<&S::Stream> {
+        match self.state {
+            TimerState::Scheduled(ref s, _) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 impl<S: Scheduler> Stream for InstanceResolutionTimer<S> {
@@ -191,6 +207,11 @@ impl<S: Scheduler> RandomPeerSyncTimer<S> {
         RandomPeerSyncTimer {
             interval: scheduler.interval(Duration::from_millis(SYNC_TIME_MS)),
         }
+    }
+
+    #[cfg(test)]
+    pub fn stream(&self) -> &S::Stream {
+        &self.interval
     }
 }
 
