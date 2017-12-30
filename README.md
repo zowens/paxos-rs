@@ -2,14 +2,14 @@
 
 *Development Status*: Experimental
 
-Library encapsulating the Paxos and variants (i.e. multi-paxos) in Rust, with a builtin
-server with Tokio and Futures.
+Library encapsulating Multi-Decree Paxos and variants in Rust with a builtin server using Tokio and Futures.
 
 The implementation is largely based on [a blog post by Tom Cocagne](https://understandingpaxos.wordpress.com/) and [the accompanying code](github.com/cocagne/multi-paxos-example). I
 found the explanation and code quite easy to read and understand.
 
-This project is laregly to gain an understanding and intuition for the subleties of Paxos and the
-variants that have been described in the literature.
+This project is laregly used to gain an understanding for the subleties of Paxos and the
+variants that have been described in the literature. Over time, the goal of the project is to be as useful as other embedded consensus sytems 
+(such as the popular Raft implementations in Go) with the flexability afforded by Paxos.
 
 Additionally, this library will be used for the reconfiguration of the chain in my implementations of [chain replication](https://github.com/zowens/chain-replication).
 
@@ -45,14 +45,15 @@ cargo build --release
     - [ ] Master Leases
         - [ ] Distinguished Proposer
         - [ ] Distinguished Learner
+        - [ ] Write Batching
     - [ ] Reconfiguration
         - [ ] Member-specific state machine
         - [ ] Learners ("observers")
     - [ ] Client Protocol
         - [ ] Membership-aware protocol
-- [ ] Generalize State Machine
+- [ ] Generalized Replicated State Machine
     - [X] Mutable Register
-    - [ ] Asynchronous Finate State Machine
+    - [ ] Asynchronous State Machine
     - [ ] Durable Log
 - [ ] Variants
     - [ ] Flexible Quorums
@@ -61,13 +62,12 @@ cargo build --release
     - [ ] WPaxos
 - [ ] Engineering
     - [ ] Generic command and value types
+    - [ ] Embeddable Library
     - [ ] Reject for wrong instance (rather than ignore)
     - [ ] Jepsen Testing
     - [ ] Configuration of timeouts and other internals
     - [ ] UDP vs. TCP
-    - [ ] Multi-Core Server
     - [ ] Rich client library and cli
-    - [ ] RDMA, DPDK
 
 ## References
 * [Paxos Variants](http://paxos.systems/variants.html#mencius)
