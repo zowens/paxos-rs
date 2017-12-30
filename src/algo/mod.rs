@@ -3,15 +3,18 @@ mod instance;
 
 
 use std::cmp::Ordering;
+use std::fmt;
 use std::rc::Rc;
 use std::ops::Deref;
+use serde::de;
+use serde;
 pub use self::instance::PaxosInstance;
 pub use self::messages::*;
 
 /// Ballot numbering is an increasing number in order to order proposals
 /// across multiple nodes. Ballots are unique in that ballot numbers between
 /// nodes are unique and it is algorithmically increasing per node.
-#[derive(PartialEq, Hash, Eq, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Hash, Eq, Clone, Copy, Debug)]
 pub struct Ballot(pub u32, pub NodeId);
 
 impl Ballot {
@@ -69,6 +72,55 @@ impl Deref for Value {
 
     fn deref(&self) -> &[u8] {
         self.0.deref()
+    }
+}
+
+impl serde::Serialize for Value {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Value {
+    fn deserialize<D>(deserializer: D) -> Result<Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_byte_buf(ValueVisitor)
+    }
+}
+
+struct ValueVisitor;
+
+impl<'de> de::Visitor<'de> for ValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a byte array/string")
+    }
+
+    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(v.to_vec().into())
+    }
+
+    fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(v.to_vec().into())
+    }
+
+    fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(v.into())
     }
 }
 

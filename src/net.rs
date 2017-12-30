@@ -6,6 +6,8 @@ use tokio_core::reactor::{Core, Handle};
 use futures::{Async, Future, Poll, Sink, Stream};
 use messages::{MultiPaxosMessage, NetworkMessage};
 use config::Configuration;
+use serde_cbor::de;
+use serde_cbor::ser;
 
 #[derive(Default)]
 struct MultiPaxosCodec;
@@ -15,7 +17,7 @@ impl UdpCodec for MultiPaxosCodec {
     type Out = NetworkMessage;
 
     fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<NetworkMessage>> {
-        Ok(MultiPaxosMessage::deserialize(buf)
+        Ok(de::from_slice::<MultiPaxosMessage>(buf)
             .map_err(|e| error!("Error deserializing message {:?}", e))
             .map(|m| {
                 NetworkMessage {
@@ -28,7 +30,7 @@ impl UdpCodec for MultiPaxosCodec {
 
     fn encode(&mut self, out: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
         let NetworkMessage { address, message } = out;
-        if let Err(e) = message.serialize(into) {
+        if let Err(e) = ser::to_writer_packed(into, &message) {
             error!("Error serialize message: {}", e);
         }
 

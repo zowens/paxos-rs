@@ -24,7 +24,6 @@
 #[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
-extern crate capnp;
 extern crate either;
 #[macro_use]
 extern crate futures;
@@ -32,6 +31,10 @@ extern crate futures_timer;
 #[macro_use]
 extern crate log;
 extern crate rand;
+extern crate serde;
+extern crate serde_cbor;
+#[macro_use]
+extern crate serde_derive;
 #[cfg(test)]
 extern crate test;
 extern crate tokio_core;
@@ -62,8 +65,3 @@ pub use proposals::{proposal_channel, ProposalReceiver, ProposalSender};
 ///
 /// In some implementations, this is also called a _slot_.
 pub type Instance = u64;
-
-#[allow(dead_code, clippy)]
-mod messages_capnp {
-    include!(concat!(env!("OUT_DIR"), "/schema/messages_capnp.rs"));
-}
