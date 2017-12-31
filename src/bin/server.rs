@@ -105,9 +105,9 @@ pub fn main() {
     println!("{:?}", config);
 
     let register = Register::default();
-    let server = UdpServer::new(&config).unwrap();
+    let server = UdpServer::new(config.clone()).unwrap();
     let (proposal_sink, proposal_stream) = proposal_channel();
     let multi_paxos = MultiPaxos::new(proposal_stream, register.clone(), config);
     spawn_client_handler(register, client_addr, server.handle(), proposal_sink);
-    server.run(multi_paxos.into_networked()).unwrap();
+    server.run(multi_paxos).unwrap();
 }

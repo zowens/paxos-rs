@@ -5,12 +5,18 @@ use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
 use either::Either;
 use messages::*;
 use algo::*;
-use super::Instance;
 use state::*;
 use statemachine::*;
 use config::*;
 use timer::*;
 use proposals::*;
+
+/// An instance is a _round_ of the Paxos algorithm. Instances are chained to
+/// form a sequence of values. Once an instance receives consensus, the next
+/// instance is started.
+///
+/// In some implementations, this is also called a _slot_.
+pub type Instance = u64;
 
 /// `MultiPaxos` receives messages and attempts to receive consensus on a replicated
 /// value. Multiple instances of the paxos algorithm are chained together.
@@ -119,11 +125,6 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             prepare_timer,
             sync_timer,
         }
-    }
-
-    /// Creates stream and sink for network messages.
-    pub fn into_networked(self) -> NetworkedMultiPaxos<R, S> {
-        NetworkedMultiPaxos { multipaxos: self }
     }
 
     /// Moves to the next instance with an accepted value
@@ -498,65 +499,6 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
         } else {
             self.downstream_blocked = Some(task::current());
             Ok(Async::NotReady)
-        }
-    }
-}
-
-/// Multi-paxos node that receives and sends nodes over a network.
-pub struct NetworkedMultiPaxos<R: ReplicatedState, S: Scheduler> {
-    multipaxos: MultiPaxos<R, S>,
-}
-
-impl<R: ReplicatedState, S: Scheduler> Sink for NetworkedMultiPaxos<R, S> {
-    type SinkItem = NetworkMessage<R::Command>;
-    type SinkError = io::Error;
-
-    fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
-        let NetworkMessage { address, message } = msg;
-        let peer = match self.multipaxos.config.peer_id(&address) {
-            Some(v) => v,
-            None => {
-                warn!(
-                    "Received message from address, but is not in configuration: {}",
-                    msg.address
-                );
-                return Ok(AsyncSink::Ready);
-            }
-        };
-
-        let send_res = self.multipaxos
-            .start_send(ClusterMessage { peer, message })?;
-        match send_res {
-            AsyncSink::Ready => Ok(AsyncSink::Ready),
-            AsyncSink::NotReady(ClusterMessage { message, .. }) => {
-                Ok(AsyncSink::NotReady(NetworkMessage { address, message }))
-            }
-        }
-    }
-
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
-        self.multipaxos.poll_complete()
-    }
-}
-
-impl<R: ReplicatedState, S: Scheduler> Stream for NetworkedMultiPaxos<R, S> {
-    type Item = NetworkMessage<R::Command>;
-    type Error = io::Error;
-
-    fn poll(&mut self) -> Poll<Option<NetworkMessage<R::Command>>, io::Error> {
-        loop {
-            match try_ready!(self.multipaxos.poll()) {
-                Some(ClusterMessage { peer, message }) => {
-                    if let Some(address) = self.multipaxos.config.address(peer) {
-                        return Ok(Async::Ready(Some(NetworkMessage { address, message })));
-                    } else {
-                        warn!("Unknown peer {:?}", peer);
-                    }
-                }
-                None => {
-                    return Ok(Async::Ready(None));
-                }
-            }
         }
     }
 }

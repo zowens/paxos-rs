@@ -16,9 +16,9 @@
 //!          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
 //!
 //! let (proposal_sink, proposal_stream) = proposal_channel();
-//! let multipaxos = MultiPaxos::new(proposal_stream, register, config.clone()).into_networked();
+//! let multipaxos = MultiPaxos::new(proposal_stream, register, config.clone());
 //!
-//! let server = UdpServer::new(&config).unwrap();
+//! let server = UdpServer::new(config).unwrap();
 //! server.run(multipaxos).unwrap();
 //! ```
 #[cfg(test)]
@@ -50,7 +50,7 @@ mod config;
 mod timer;
 mod proposals;
 
-pub use multipaxos::{MultiPaxos, NetworkedMultiPaxos};
+pub use multipaxos::{Instance, MultiPaxos};
 pub use statemachine::ReplicatedState;
 pub use net::UdpServer;
 pub use register::Register;
@@ -58,10 +58,3 @@ pub use config::{Configuration, PeerIntoIter, PeerIter};
 pub use timer::{FuturesScheduler, Scheduler};
 pub use algo::{BytesValue, NodeId, Value};
 pub use proposals::{proposal_channel, ProposalReceiver, ProposalSender};
-
-/// An instance is a _round_ of the Paxos algorithm. Instances are chained to
-/// form a sequence of values. Once an instance receives consensus, the next
-/// instance is started.
-///
-/// In some implementations, this is also called a _slot_.
-pub type Instance = u64;

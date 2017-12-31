@@ -2,13 +2,13 @@ use std::net::SocketAddr;
 use std::io;
 use std::fmt;
 use std::marker::PhantomData;
-use futures::{Async, Future, Poll, Sink, Stream};
+use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use serde_cbor::de;
 use serde_cbor::ser;
 use tokio_core::net::{UdpCodec, UdpSocket};
 use tokio_core::reactor::{Core, Handle};
 use algo::Value;
-use messages::{MultiPaxosMessage, NetworkMessage};
+use messages::{ClusterMessage, MultiPaxosMessage, NetworkMessage};
 use config::Configuration;
 
 #[derive(Default)]
@@ -40,22 +40,98 @@ impl<V: Value + 'static> UdpCodec for MultiPaxosCodec<V> {
     }
 }
 
+/// Multi-paxos node that receives and sends nodes over a network.
+pub struct NetworkedMultiPaxos<V: Value, S>
+where
+    S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
+    S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
+{
+    s: S,
+    config: Configuration,
+}
+
+impl<V: Value, S> Sink for NetworkedMultiPaxos<V, S>
+where
+    S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
+    S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
+{
+    type SinkItem = NetworkMessage<V>;
+    type SinkError = io::Error;
+
+    fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
+        let NetworkMessage { address, message } = msg;
+        let peer = match self.config.peer_id(&address) {
+            Some(v) => v,
+            None => {
+                warn!(
+                    "Received message from address, but is not in configuration: {}",
+                    msg.address
+                );
+                return Ok(AsyncSink::Ready);
+            }
+        };
+
+        let send_res = self.s.start_send(ClusterMessage { peer, message })?;
+        match send_res {
+            AsyncSink::Ready => Ok(AsyncSink::Ready),
+            AsyncSink::NotReady(ClusterMessage { message, .. }) => {
+                Ok(AsyncSink::NotReady(NetworkMessage { address, message }))
+            }
+        }
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), io::Error> {
+        self.s.poll_complete()
+    }
+}
+
+impl<V: Value, S> Stream for NetworkedMultiPaxos<V, S>
+where
+    S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
+    S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
+{
+    type Item = NetworkMessage<V>;
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Option<NetworkMessage<V>>, io::Error> {
+        loop {
+            match try_ready!(self.s.poll()) {
+                Some(ClusterMessage { peer, message }) => {
+                    if let Some(address) = self.config.address(peer) {
+                        return Ok(Async::Ready(Some(NetworkMessage { address, message })));
+                    } else {
+                        warn!("Unknown peer {:?}", peer);
+                    }
+                }
+                None => {
+                    return Ok(Async::Ready(None));
+                }
+            }
+        }
+    }
+}
+
 /// Server that runs a multi-paxos node over the network with UDP.
 pub struct UdpServer {
     core: Core,
     socket: UdpSocket,
+    config: Configuration,
 }
 
 impl UdpServer {
     /// Creates a new `UdpServer` with the address of the node
     /// specified in the configuration.
-    pub fn new(config: &Configuration) -> io::Result<UdpServer> {
+    pub fn new(config: Configuration) -> io::Result<UdpServer> {
         let core = Core::new()?;
         let handle = core.handle();
 
         let socket = UdpSocket::bind(config.current_address(), &handle)?;
 
-        Ok(UdpServer { core, socket })
+        Ok(UdpServer {
+            core,
+            socket,
+            config,
+        })
     }
 
     /// Gets a handle in order to spawn additional futures other than the multi-paxos
@@ -67,9 +143,13 @@ impl UdpServer {
     /// Runs a multi-paxos node, blocking until the program is terminated.
     pub fn run<S: 'static, V: Value + 'static>(mut self, multipaxos: S) -> Result<(), ()>
     where
-        S: Stream<Item = NetworkMessage<V>, Error = io::Error>,
-        S: Sink<SinkItem = NetworkMessage<V>, SinkError = io::Error>,
+        S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
+        S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
     {
+        let multipaxos = NetworkedMultiPaxos {
+            s: multipaxos,
+            config: self.config,
+        };
         let (sink, stream) = multipaxos.split();
 
         let codec: MultiPaxosCodec<V> = MultiPaxosCodec(PhantomData);
