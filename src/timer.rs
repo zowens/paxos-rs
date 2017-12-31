@@ -7,7 +7,6 @@ use futures::task;
 use futures_timer::Interval;
 use super::Instance;
 use rand::{thread_rng, Rng};
-use algo::ProposerMsg;
 
 /// Starting timeout for restarting Phase 1
 const RESOLUTION_STARTING_MS: u64 = 5;
@@ -79,16 +78,16 @@ impl<S: Scheduler, M: Clone> TimerState<S, M> {
 
 /// Timer that will resend a message to the downstream peers in order
 /// to drive consensus.
-pub struct RetransmitTimer<S: Scheduler> {
+pub struct RetransmitTimer<S: Scheduler, V: Clone> {
     scheduler: S,
-    state: TimerState<S, (Instance, ProposerMsg)>,
+    state: TimerState<S, (Instance, V)>,
 }
 
-impl<S> RetransmitTimer<S>
+impl<S, V: Clone> RetransmitTimer<S, V>
 where
     S: Scheduler,
 {
-    pub fn new(scheduler: S) -> RetransmitTimer<S> {
+    pub fn new(scheduler: S) -> RetransmitTimer<S, V> {
         RetransmitTimer {
             scheduler,
             state: TimerState::Empty,
@@ -101,7 +100,7 @@ where
     }
 
     /// Schedules a message for resend
-    pub fn schedule(&mut self, inst: Instance, msg: ProposerMsg) {
+    pub fn schedule(&mut self, inst: Instance, msg: V) {
         trace!("Scheduling retransmit");
         self.state.put_message(
             self.scheduler.interval(Duration::from_millis(1000)),
@@ -118,11 +117,11 @@ where
     }
 }
 
-impl<S: Scheduler> Stream for RetransmitTimer<S> {
-    type Item = (Instance, ProposerMsg);
+impl<S: Scheduler, V: Clone> Stream for RetransmitTimer<S, V> {
+    type Item = (Instance, V);
     type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<(Instance, ProposerMsg)>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<(Instance, V)>, io::Error> {
         self.state.poll_stream()
     }
 }

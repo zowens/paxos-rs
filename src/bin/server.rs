@@ -15,7 +15,7 @@ use tokio_core::net::TcpListener;
 use tokio_core::reactor::Handle;
 use tokio_io::AsyncRead;
 use tokio_io::codec::LinesCodec;
-use paxos::{proposal_channel, Configuration, MultiPaxos, ProposalSender, Register,
+use paxos::{proposal_channel, BytesValue, Configuration, MultiPaxos, ProposalSender, Register,
             ReplicatedState, UdpServer};
 
 fn local_config(node: u16) -> (Configuration, SocketAddr) {
@@ -44,7 +44,7 @@ fn spawn_client_handler(
     register: Register,
     addr: SocketAddr,
     handle: Handle,
-    proposals: ProposalSender,
+    proposals: ProposalSender<BytesValue>,
 ) {
     let socket = TcpListener::bind(&addr, &handle).unwrap();
 

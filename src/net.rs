@@ -1,23 +1,25 @@
 use std::net::SocketAddr;
 use std::io;
 use std::fmt;
-use tokio_core::net::{UdpCodec, UdpFramed, UdpSocket};
-use tokio_core::reactor::{Core, Handle};
+use std::marker::PhantomData;
 use futures::{Async, Future, Poll, Sink, Stream};
-use messages::{MultiPaxosMessage, NetworkMessage};
-use config::Configuration;
 use serde_cbor::de;
 use serde_cbor::ser;
+use tokio_core::net::{UdpCodec, UdpSocket};
+use tokio_core::reactor::{Core, Handle};
+use algo::Value;
+use messages::{MultiPaxosMessage, NetworkMessage};
+use config::Configuration;
 
 #[derive(Default)]
-struct MultiPaxosCodec;
+struct MultiPaxosCodec<V: Value + 'static>(PhantomData<V>);
 
-impl UdpCodec for MultiPaxosCodec {
-    type In = Option<NetworkMessage>;
-    type Out = NetworkMessage;
+impl<V: Value + 'static> UdpCodec for MultiPaxosCodec<V> {
+    type In = Option<NetworkMessage<V>>;
+    type Out = NetworkMessage<V>;
 
-    fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<NetworkMessage>> {
-        Ok(de::from_slice::<MultiPaxosMessage>(buf)
+    fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<NetworkMessage<V>>> {
+        Ok(de::from_slice::<MultiPaxosMessage<V>>(buf)
             .map_err(|e| error!("Error deserializing message {:?}", e))
             .map(|m| {
                 NetworkMessage {
@@ -41,7 +43,7 @@ impl UdpCodec for MultiPaxosCodec {
 /// Server that runs a multi-paxos node over the network with UDP.
 pub struct UdpServer {
     core: Core,
-    framed: UdpFramed<MultiPaxosCodec>,
+    socket: UdpSocket,
 }
 
 impl UdpServer {
@@ -51,9 +53,9 @@ impl UdpServer {
         let core = Core::new()?;
         let handle = core.handle();
 
-        let framed = UdpSocket::bind(config.current_address(), &handle)?.framed(MultiPaxosCodec);
+        let socket = UdpSocket::bind(config.current_address(), &handle)?;
 
-        Ok(UdpServer { core, framed })
+        Ok(UdpServer { core, socket })
     }
 
     /// Gets a handle in order to spawn additional futures other than the multi-paxos
@@ -63,13 +65,15 @@ impl UdpServer {
     }
 
     /// Runs a multi-paxos node, blocking until the program is terminated.
-    pub fn run<S: 'static>(mut self, upstream: S) -> Result<(), ()>
+    pub fn run<S: 'static, V: Value + 'static>(mut self, multipaxos: S) -> Result<(), ()>
     where
-        S: Stream<Item = NetworkMessage, Error = io::Error>,
-        S: Sink<SinkItem = NetworkMessage, SinkError = io::Error>,
+        S: Stream<Item = NetworkMessage<V>, Error = io::Error>,
+        S: Sink<SinkItem = NetworkMessage<V>, SinkError = io::Error>,
     {
-        let (sink, stream) = upstream.split();
-        let (net_sink, net_stream) = self.framed.split();
+        let (sink, stream) = multipaxos.split();
+
+        let codec: MultiPaxosCodec<V> = MultiPaxosCodec(PhantomData);
+        let (net_sink, net_stream) = self.socket.framed(codec).split();
 
         let net_stream = net_stream.filter_map(|v| v);
 

@@ -39,21 +39,21 @@ use proposals::*;
 /// ```
 pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
     state_machine: R,
-    state_handler: StateHandler,
+    state_handler: StateHandler<R::Command>,
 
     instance: Instance,
-    paxos: PaxosInstance,
+    paxos: PaxosInstance<R::Command>,
     config: Configuration,
 
     // downstream is sent out from this node
-    downstream: VecDeque<ClusterMessage>,
+    downstream: VecDeque<ClusterMessage<R::Command>>,
     downstream_blocked: Option<task::Task>,
 
     // proposals received async
-    proposal_receiver: ProposalReceiver,
+    proposal_receiver: ProposalReceiver<R::Command>,
 
     // timers for driving resolution
-    retransmit_timer: RetransmitTimer<S>,
+    retransmit_timer: RetransmitTimer<S, ProposerMsg<R::Command>>,
     prepare_timer: InstanceResolutionTimer<S>,
     sync_timer: RandomPeerSyncTimer<S>,
 }
@@ -66,7 +66,7 @@ impl<R: ReplicatedState> MultiPaxos<R, FuturesScheduler> {
     /// * `state_machine` - The finite state machine used to apply decided commands.
     /// * `config` - The initial membership of the cluster in which the node participats.
     pub fn new(
-        proposal_receiver: ProposalReceiver,
+        proposal_receiver: ProposalReceiver<R::Command>,
         state_machine: R,
         config: Configuration,
     ) -> MultiPaxos<R, FuturesScheduler> {
@@ -84,14 +84,14 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// * `config` - The initial membership of the cluster in which the node participats.
     pub fn with_scheduler(
         scheduler: S,
-        proposal_receiver: ProposalReceiver,
+        proposal_receiver: ProposalReceiver<R::Command>,
         mut state_machine: R,
         config: Configuration,
     ) -> MultiPaxos<R, S> {
-        let mut state_handler = StateHandler::new();
+        let mut state_handler = StateHandler::<R::Command>::new();
 
         let state = state_handler.load().unwrap_or_default();
-        let paxos = PaxosInstance::new(
+        let paxos = PaxosInstance::<R::Command>::new(
             config.current(),
             config.quorum_size(),
             state.promised,
@@ -127,7 +127,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     /// Moves to the next instance with an accepted value
-    fn advance_instance(&mut self, instance: Instance, value: Value) {
+    fn advance_instance(&mut self, instance: Instance, value: R::Command) {
         self.state_machine.apply_value(instance, value.clone());
 
         let new_inst = instance + 1;
@@ -148,7 +148,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     #[inline]
-    fn send_multipaxos(&mut self, peer: NodeId, message: MultiPaxosMessage) {
+    fn send_multipaxos(&mut self, peer: NodeId, message: MultiPaxosMessage<R::Command>) {
         debug!("[SEND] peer={} : {:?}", peer, message);
         self.downstream.push_back(ClusterMessage { peer, message });
 
@@ -176,7 +176,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     /// Broadcasts ACCEPT messages to all peers
-    fn send_accept(&mut self, accept: &Accept) {
+    fn send_accept(&mut self, accept: &Accept<R::Command>) {
         debug!("[BROADCAST] : {:?}", accept);
 
         let peers = self.config.peers();
@@ -194,7 +194,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     /// Broadcasts ACCEPTED messages to all peers
-    fn send_accepted(&mut self, accepted: &Accepted) {
+    fn send_accepted(&mut self, accepted: &Accepted<R::Command>) {
         debug!("[BROADCAST] : {:?}", accepted);
 
         let inst = self.instance;
@@ -211,7 +211,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         }
     }
 
-    fn propose_update(&mut self, value: Value) {
+    fn propose_update(&mut self, value: R::Command) {
         let inst = self.instance;
         match self.paxos.propose_value(value) {
             Some(Either::Left(prepare)) => {
@@ -230,7 +230,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         }
     }
 
-    fn poll_retransmit(&mut self, inst: Instance, msg: ProposerMsg) {
+    fn poll_retransmit(&mut self, inst: Instance, msg: ProposerMsg<R::Command>) {
         if inst != self.instance {
             // TODO: assert?
             warn!("Retransmit for previous instance dropped");
@@ -302,7 +302,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         }
     }
 
-    fn on_promise(&mut self, peer: NodeId, inst: Instance, promise: Promise) {
+    fn on_promise(&mut self, peer: NodeId, inst: Instance, promise: Promise<R::Command>) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
@@ -333,7 +333,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         self.prepare_timer.schedule_retry(inst);
     }
 
-    fn on_accept(&mut self, peer: NodeId, inst: Instance, accept: Accept) {
+    fn on_accept(&mut self, peer: NodeId, inst: Instance, accept: Accept<R::Command>) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
@@ -355,6 +355,9 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
                 self.send_accepted(&accepted);
                 self.advance_instance(inst, v);
+
+                // prevent setting the prepare timer
+                return;
             }
             Either::Right(reject) => {
                 self.send_multipaxos(
@@ -367,10 +370,13 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         // if the proposer dies before receiving consensus, this node can
         // "pick up the ball" and receive consensus from a quorum of
         // the remaining selectors
+        //
+        // TODO: should we just set this up during ACCEPTED rather than REJECT
+        // and ACCEPTED?
         self.prepare_timer.schedule_timeout(inst);
     }
 
-    fn on_accepted(&mut self, peer: NodeId, inst: Instance, accepted: Accepted) {
+    fn on_accepted(&mut self, peer: NodeId, inst: Instance, accepted: Accepted<R::Command>) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
@@ -403,7 +409,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         }
     }
 
-    fn on_catchup(&mut self, inst: Instance, current: Value) {
+    fn on_catchup(&mut self, inst: Instance, current: R::Command) {
         // only accept a catchup value if it is greater than
         // the current instance known to this node
         if inst > self.instance {
@@ -415,10 +421,10 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 }
 
 impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
-    type SinkItem = ClusterMessage;
+    type SinkItem = ClusterMessage<R::Command>;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, msg: ClusterMessage) -> StartSend<ClusterMessage, io::Error> {
+    fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
         let ClusterMessage { peer, message } = msg;
         debug!("[RECEIVE] peer={}: {:?}", peer, message);
         match message {
@@ -463,9 +469,9 @@ fn from_poll<V>(s: Poll<Option<V>, io::Error>) -> io::Result<Option<V>> {
 }
 
 impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
-    type Item = ClusterMessage;
+    type Item = ClusterMessage<R::Command>;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Option<ClusterMessage>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<ClusterMessage<R::Command>>, io::Error> {
         // poll for retransmission
         while let Some((inst, msg)) = from_poll(self.retransmit_timer.poll())? {
             self.poll_retransmit(inst, msg);
@@ -502,10 +508,10 @@ pub struct NetworkedMultiPaxos<R: ReplicatedState, S: Scheduler> {
 }
 
 impl<R: ReplicatedState, S: Scheduler> Sink for NetworkedMultiPaxos<R, S> {
-    type SinkItem = NetworkMessage;
+    type SinkItem = NetworkMessage<R::Command>;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, msg: NetworkMessage) -> StartSend<NetworkMessage, io::Error> {
+    fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
         let NetworkMessage { address, message } = msg;
         let peer = match self.multipaxos.config.peer_id(&address) {
             Some(v) => v,
@@ -534,10 +540,10 @@ impl<R: ReplicatedState, S: Scheduler> Sink for NetworkedMultiPaxos<R, S> {
 }
 
 impl<R: ReplicatedState, S: Scheduler> Stream for NetworkedMultiPaxos<R, S> {
-    type Item = NetworkMessage;
+    type Item = NetworkMessage<R::Command>;
     type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<NetworkMessage>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<NetworkMessage<R::Command>>, io::Error> {
         loop {
             match try_ready!(self.multipaxos.poll()) {
                 Some(ClusterMessage { peer, message }) => {
@@ -1642,7 +1648,10 @@ mod tests {
 
     fn collect_messages<S: Scheduler>(
         multi_paxos: MultiPaxos<TestStateMachine, S>,
-    ) -> (Vec<ClusterMessage>, MultiPaxos<TestStateMachine, S>) {
+    ) -> (
+        Vec<ClusterMessage<BytesValue>>,
+        MultiPaxos<TestStateMachine, S>,
+    ) {
         let mut s = spawn(multi_paxos);
         let h = notify_noop();
 
@@ -1670,14 +1679,16 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct TestStateMachine(Vec<(Instance, Value)>);
+    struct TestStateMachine(Vec<(Instance, BytesValue)>);
 
     impl ReplicatedState for TestStateMachine {
-        fn apply_value(&mut self, instance: Instance, value: Value) {
+        type Command = BytesValue;
+
+        fn apply_value(&mut self, instance: Instance, value: BytesValue) {
             self.0.push((instance, value));
         }
 
-        fn snapshot(&self, _instance: Instance) -> Option<Value> {
+        fn snapshot(&self, _instance: Instance) -> Option<BytesValue> {
             self.0.iter().next_back().map(|v| v.1.clone())
         }
     }

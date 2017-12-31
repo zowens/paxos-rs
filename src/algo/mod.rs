@@ -1,12 +1,12 @@
 mod messages;
 mod instance;
 
-
 use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
 use std::ops::Deref;
 use serde::de;
+use serde::ser;
 use serde;
 pub use self::instance::PaxosInstance;
 pub use self::messages::*;
@@ -51,23 +51,34 @@ impl Ord for Ballot {
 /// within the configuration.
 pub type NodeId = u32;
 
+/// Value type for Paxos.
+///
+/// TODO: trait aliases!
+pub trait Value
+    : ser::Serialize + for<'de> de::Deserialize<'de> + PartialEq + Eq + Clone + fmt::Debug
+    {
+}
+
+
 /// Command value that the cluster members agree upon to reach consensus.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Value(Rc<[u8]>);
+pub struct BytesValue(Rc<[u8]>);
 
-impl From<Vec<u8>> for Value {
-    fn from(vec: Vec<u8>) -> Value {
-        Value(vec.into_boxed_slice().into())
+impl Value for BytesValue {}
+
+impl From<Vec<u8>> for BytesValue {
+    fn from(vec: Vec<u8>) -> BytesValue {
+        BytesValue(vec.into_boxed_slice().into())
     }
 }
 
-impl From<String> for Value {
-    fn from(s: String) -> Value {
-        Value(s.into_boxed_str().into_boxed_bytes().into())
+impl From<String> for BytesValue {
+    fn from(s: String) -> BytesValue {
+        BytesValue(s.into_boxed_str().into_boxed_bytes().into())
     }
 }
 
-impl Deref for Value {
+impl Deref for BytesValue {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
@@ -75,28 +86,28 @@ impl Deref for Value {
     }
 }
 
-impl serde::Serialize for Value {
+impl serde::Serialize for BytesValue {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serializer.serialize_bytes(&self)
+        serializer.serialize_bytes(self)
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Value {
-    fn deserialize<D>(deserializer: D) -> Result<Value, D::Error>
+impl<'de> serde::Deserialize<'de> for BytesValue {
+    fn deserialize<D>(deserializer: D) -> Result<BytesValue, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_byte_buf(ValueVisitor)
+        deserializer.deserialize_byte_buf(BytesValueVisitor)
     }
 }
 
-struct ValueVisitor;
+struct BytesValueVisitor;
 
-impl<'de> de::Visitor<'de> for ValueVisitor {
-    type Value = Value;
+impl<'de> de::Visitor<'de> for BytesValueVisitor {
+    type Value = BytesValue;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a byte array/string")

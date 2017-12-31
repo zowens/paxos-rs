@@ -6,7 +6,7 @@ use super::messages::*;
 
 /// Encoding of the Proposer role's state machine
 #[derive(Debug)]
-enum ProposerState {
+enum ProposerState<V: Value> {
     /// Empty state: this proposer is not a candidate (in Phase 1) or
     /// a leader (Phase 2)
     Empty,
@@ -17,7 +17,7 @@ enum ProposerState {
         /// Value that will be sent with the first ACCEPT message. This is either
         /// a proposed value initially or will be overwritten by the highest accepted
         /// value from the acceptor with the highest ballot.
-        value: Option<Value>,
+        value: Option<V>,
         /// Tracking the PROMISE messages received by acceptors.
         promises: QuorumSet,
         /// Tracking of the REJECT messages received by acceptors.
@@ -31,14 +31,14 @@ enum ProposerState {
         /// The ballot to send with ACCEPT messages
         proposal: Ballot,
         /// Value to send via ACCEPT
-        value: Option<Value>,
+        value: Option<V>,
         /// Rejections received from acceptors
         rejections: QuorumSet,
     },
 }
 
-impl ProposerState {
-    fn take_value(&mut self) -> Option<Value> {
+impl<V: Value> ProposerState<V> {
+    fn take_value(&mut self) -> Option<V> {
         match *self {
             ProposerState::Empty => None,
             ProposerState::Candidate { ref mut value, .. }
@@ -52,9 +52,9 @@ impl ProposerState {
 /// Phase 1. Once it has received a quorum, it will move to Phase 2 in which is will
 /// potentially send an ACCEPT message with a value from the acceptor with the highest
 /// accepted value already seen (key to the Paxos algorithm)
-struct Proposer {
+struct Proposer<V: Value> {
     /// State of the proposer state machine
-    state: ProposerState,
+    state: ProposerState<V>,
     /// Highest seen ballot thus far from any peer
     highest: Option<Ballot>,
     /// Node ID of the current node (used to construct ballots)
@@ -63,7 +63,7 @@ struct Proposer {
     quorum: usize,
 }
 
-impl Proposer {
+impl<V: Value> Proposer<V> {
     /// Overrides the highest seen value, if ballot is the highest seen
     fn observe_ballot(&mut self, ballot: Ballot) {
         // empty OR existing highest < ballot causes highest to be set
@@ -80,7 +80,7 @@ impl Proposer {
     }
 
     /// Prepare sets state to candidate and begins to track promises.
-    fn prepare(&mut self, value: Option<Value>) -> Prepare {
+    fn prepare(&mut self, value: Option<V>) -> Prepare {
         let new_ballot = self.highest
             .map(|m| m.higher_for(self.current))
             .unwrap_or_else(|| Ballot(0, self.current));
@@ -104,7 +104,7 @@ impl Proposer {
     /// be accepted, as the maximum accepted value from acceptors is used as preference.
     ///
     /// TODO: Do we need to note if the value is not used?
-    fn propose_value(&mut self, v: Value) -> Option<ProposerMsg> {
+    fn propose_value(&mut self, v: V) -> Option<ProposerMsg<V>> {
         match self.state {
             // if the proposer is in the empty state, we'll attempt to run Phase 1
             // with a prepare message
@@ -178,7 +178,7 @@ impl Proposer {
     }
 
     /// Note a promise from a peer. An ACCEPT message is returned if quorum is detected.
-    fn receive_promise(&mut self, peer: NodeId, promise: Promise) -> Option<Accept> {
+    fn receive_promise(&mut self, peer: NodeId, promise: Promise<V>) -> Option<Accept<V>> {
         let Promise(proposed, accepted) = promise;
         debug!("Received PROMISE for {:?} from peer {}", proposed, peer);
 
@@ -253,14 +253,14 @@ impl Proposer {
 }
 
 /// Encoding of Acceptor (persistent Paxos memory) role
-struct Acceptor {
+struct Acceptor<V: Value> {
     /// last promised ballot within this instance
     promised: Option<Ballot>,
     /// last accepted ballot/value pair within this instance
-    accepted: Option<(Ballot, Value)>,
+    accepted: Option<(Ballot, V)>,
 }
 
-impl Acceptor {
+impl<V: Value> Acceptor<V> {
     /// Handler for a PREPARE message sent from a proposer. The result is either a PROMISE
     /// to the proposer to not accept ballots > proposal or a REJECT if a ballot has been
     /// promised with a ballot > proposal.
@@ -268,7 +268,7 @@ impl Acceptor {
         &mut self,
         peer: NodeId,
         prepare: Prepare,
-    ) -> Either<Reply<Promise>, Reply<Reject>> {
+    ) -> Either<Reply<Promise<V>>, Reply<Reject>> {
         let Prepare(proposal) = prepare;
 
         debug_assert_eq!(
@@ -298,7 +298,11 @@ impl Acceptor {
     /// Handler for an ACCEPT message, which is sent from a proposer when a quorum
     /// for the Phase 1 PREPARE has been made from acceptors. Opposing ballots may still
     /// happen in Phase 2, in which case a REJECT is sent.
-    fn receive_accept(&mut self, peer: NodeId, accept: Accept) -> Either<Accepted, Reply<Reject>> {
+    fn receive_accept(
+        &mut self,
+        peer: NodeId,
+        accept: Accept<V>,
+    ) -> Either<Accepted<V>, Reply<Reject>> {
         let Accept(proposal, value) = accept;
         let opposing_ballot = self.promised.filter(|b| b > &proposal);
         match opposing_ballot {
@@ -332,17 +336,17 @@ impl Acceptor {
 
 /// Tracking of the proposal within the learner state machien
 #[derive(Debug)]
-struct ProposalStatus {
+struct ProposalStatus<V: Value> {
     /// Set of acceptors that have sent ACCEPTED responses for this instance
     acceptors: QuorumSet,
     /// Value of the value from the acceptors (the invariant is that all
     /// acceptors will send the same value for a given ballot)
-    value: Value,
+    value: V,
 }
 
 /// State machine for the learner
 #[derive(Debug)]
-enum LearnerState {
+enum LearnerState<V: Value> {
     /// The learner is waiting for ACCEPTED messages from the acceptors to
     /// meet quorum
     AwaitQuorum {
@@ -350,7 +354,7 @@ enum LearnerState {
         /// for acceptors to send out ACCEPTED for different ballots,
         /// thus we need to wait for the final ballot's quorum to proceed
         /// to the final state
-        proposals: HashMap<Ballot, ProposalStatus>,
+        proposals: HashMap<Ballot, ProposalStatus<V>>,
 
         /// holds mapping of acceptor's last ballot in order to Reject
         /// previous ballot acceptance
@@ -361,22 +365,22 @@ enum LearnerState {
         /// Final ballot that was accepted
         accepted: Ballot,
         /// Accepted value
-        value: Value,
+        value: V,
     },
 }
 
 /// Handler for state transitions for the Learner role. A Paxos Learner listens
 /// for ACCEPTED messages in order to determine quorum for the final value.
-struct Learner {
+struct Learner<V: Value> {
     /// state of the learner (AwaitQuorum or Final)
-    state: LearnerState,
+    state: LearnerState<V>,
     /// Size of quorum
     quorum: usize,
 }
 
-impl Learner {
+impl<V: Value> Learner<V> {
     /// Handles ACCEPTED messages from acceptors.
-    fn receive_accepted(&mut self, peer: NodeId, accepted: Accepted) -> Option<Resolution> {
+    fn receive_accepted(&mut self, peer: NodeId, accepted: Accepted<V>) -> Option<Resolution<V>> {
         let Accepted(proposal, value) = accepted;
 
         match self.state {
@@ -472,20 +476,20 @@ impl Learner {
 }
 
 /// Instance of the Paxos algorithm.
-pub struct PaxosInstance {
-    proposer: Proposer,
-    acceptor: Acceptor,
-    learner: Learner,
+pub struct PaxosInstance<V: Value> {
+    proposer: Proposer<V>,
+    acceptor: Acceptor<V>,
+    learner: Learner<V>,
 }
 
-impl PaxosInstance {
+impl<V: Value> PaxosInstance<V> {
     /// Creates a new instance of Paxos for a given node.
     pub fn new(
         current: NodeId,
         quorum: usize,
         promised: Option<Ballot>,
-        accepted: Option<(Ballot, Value)>,
-    ) -> PaxosInstance {
+        accepted: Option<(Ballot, V)>,
+    ) -> PaxosInstance<V> {
         // TODO: if `accepted` is Some, add to learner
 
         PaxosInstance {
@@ -528,7 +532,7 @@ impl PaxosInstance {
     /// be accepted, as the maximum accepted value from acceptors is used as preference.
     ///
     /// TODO: Do we need to note if the value is not used?
-    pub fn propose_value(&mut self, v: Value) -> Option<ProposerMsg> {
+    pub fn propose_value(&mut self, v: V) -> Option<ProposerMsg<V>> {
         match self.proposer.propose_value(v) {
             Some(Either::Left(prepare)) => {
                 // node auto-accepts proposal from itself
@@ -554,7 +558,7 @@ impl PaxosInstance {
     }
 
     /// Handler for a PROMISE from a peer. An ACCEPT message is returned if quorum is detected.
-    pub fn receive_promise(&mut self, peer: NodeId, promise: Promise) -> Option<Accept> {
+    pub fn receive_promise(&mut self, peer: NodeId, promise: Promise<V>) -> Option<Accept<V>> {
         match self.proposer.receive_promise(peer, promise) {
             Some(accept) => {
                 // track the proposer as accepting the ballot
@@ -579,7 +583,7 @@ impl PaxosInstance {
         &mut self,
         peer: NodeId,
         prepare: Prepare,
-    ) -> Either<Reply<Promise>, Reply<Reject>> {
+    ) -> Either<Reply<Promise<V>>, Reply<Reject>> {
         self.proposer.observe_ballot(prepare.0);
         self.acceptor.receive_prepare(peer, prepare)
     }
@@ -590,8 +594,8 @@ impl PaxosInstance {
     pub fn receive_accept(
         &mut self,
         peer: NodeId,
-        accept: Accept,
-    ) -> Either<(Accepted, Option<Resolution>), Reply<Reject>> {
+        accept: Accept<V>,
+    ) -> Either<(Accepted<V>, Option<Resolution<V>>), Reply<Reject>> {
         self.proposer.observe_ballot(accept.0);
         match self.acceptor.receive_accept(peer, accept) {
             Either::Left(accepted) => {
@@ -613,7 +617,11 @@ impl PaxosInstance {
     }
 
     /// Handles ACCEPTED messages from acceptors.
-    pub fn receive_accepted(&mut self, peer: NodeId, accepted: Accepted) -> Option<Resolution> {
+    pub fn receive_accepted(
+        &mut self,
+        peer: NodeId,
+        accepted: Accepted<V>,
+    ) -> Option<Resolution<V>> {
         self.proposer.observe_ballot(accepted.0);
         self.learner.receive_accepted(peer, accepted)
     }
@@ -626,7 +634,7 @@ mod tests {
     #[test]
     fn propose_value() {
         // propose value with empty producer (hasn't started Phase 1)
-        let mut paxos = PaxosInstance::new(1, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 2, None, None);
 
         let prepare = paxos.propose_value(vec![0x0u8, 0xffu8].into());
         assert_matches!(prepare, Some(Either::Left(Prepare(Ballot(0, 1)))));
@@ -655,7 +663,7 @@ mod tests {
         );
 
         // propose value with producer that has started phase 1 (but no value has been proposed)
-        let mut paxos = PaxosInstance::new(1, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 2, None, None);
 
         paxos.prepare();
         paxos.propose_value(vec![0xfeu8].into());
@@ -672,7 +680,7 @@ mod tests {
 
         // propose value with producer that has completed Phase 1
         // but has not yet started Phase 2
-        let mut paxos = PaxosInstance::new(1, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 2, None, None);
         paxos.proposer.state = ProposerState::Leader {
             proposal: Ballot(0, 1),
             value: None,
@@ -718,7 +726,7 @@ mod tests {
 
     #[test]
     fn prepare() {
-        let mut paxos = PaxosInstance::new(1, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 2, None, None);
         // fake observing high ballot
         paxos.proposer.observe_ballot(Ballot(100, 1));
 
@@ -737,7 +745,7 @@ mod tests {
 
     #[test]
     fn receive_promise() {
-        let mut paxos = PaxosInstance::new(1, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 2, None, None);
         // fake observing high ballot
         paxos.proposer.observe_ballot(Ballot(100, 1));
 
@@ -766,7 +774,7 @@ mod tests {
         );
 
         // start a producer with proposed value that receives a quorum with no accepted value
-        let mut paxos = PaxosInstance::new(1, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 2, None, None);
         // fake observing high ballot
         paxos.proposer.observe_ballot(Ballot(100, 1));
 
@@ -797,7 +805,7 @@ mod tests {
         );
 
         // start a producer with proposed value that receives a quorum with an accepted value
-        let mut paxos = PaxosInstance::new(1, 3, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 3, None, None);
         // fake observing high ballot
         paxos.proposer.observe_ballot(Ballot(100, 1));
 
@@ -863,7 +871,7 @@ mod tests {
     #[test]
     fn receive_reject() {
         // start a producer that receives rejections during Phase 1
-        let mut paxos = PaxosInstance::new(1, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 2, None, None);
         // fake observing high ballot
         paxos.proposer.observe_ballot(Ballot(100, 1));
 
@@ -896,7 +904,7 @@ mod tests {
             } if promise_rejections.is_empty());
 
         // start a producer that receives rejections during Phase 1 and Phase 2
-        let mut paxos = PaxosInstance::new(1, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(1, 2, None, None);
         // fake observing high ballot
         paxos.proposer.observe_ballot(Ballot(100, 1));
 
@@ -938,7 +946,7 @@ mod tests {
 
     #[test]
     fn receive_prepare() {
-        let mut paxos = PaxosInstance::new(0, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(0, 2, None, None);
 
         // acceptor promises the ballot when nothing promised
         let res = paxos.receive_prepare(1, Prepare(Ballot(100, 1)));
@@ -993,7 +1001,7 @@ mod tests {
 
     #[test]
     fn receive_accept() {
-        let mut paxos = PaxosInstance::new(0, 3, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(0, 3, None, None);
 
         // acceptor allows ACCEPT without a promise
         let res = paxos.receive_accept(1, Accept(Ballot(101, 1), vec![0xee, 0xe0].into()));
@@ -1030,10 +1038,10 @@ mod tests {
 
     #[test]
     fn receive_accepted() {
-        let mut paxos = PaxosInstance::new(0, 2, None, None);
+        let mut paxos = PaxosInstance::<BytesValue>::new(0, 2, None, None);
 
         // accepts new ballots
-        let val: Value = vec![0x0u8, 0xeeu8].into();
+        let val: BytesValue = vec![0x0u8, 0xeeu8].into();
         let resolution = paxos.receive_accepted(1, Accepted(Ballot(100, 0), val.clone()));
         assert!(resolution.is_none());
         assert_matches!(

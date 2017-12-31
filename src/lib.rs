@@ -56,7 +56,7 @@ pub use net::UdpServer;
 pub use register::Register;
 pub use config::{Configuration, PeerIntoIter, PeerIter};
 pub use timer::{FuturesScheduler, Scheduler};
-pub use algo::{NodeId, Value};
+pub use algo::{BytesValue, NodeId, Value};
 pub use proposals::{proposal_channel, ProposalReceiver, ProposalSender};
 
 /// An instance is a _round_ of the Paxos algorithm. Instances are chained to

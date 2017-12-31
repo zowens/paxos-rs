@@ -4,23 +4,23 @@ use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use algo::Value;
 
 /// Creates a sink and stream pair for proposals.
-pub fn proposal_channel() -> (ProposalSender, ProposalReceiver) {
+pub fn proposal_channel<V: Value>() -> (ProposalSender<V>, ProposalReceiver<V>) {
     // TODO: bound the number of in-flight proposals, possible batching
-    let (sink, stream) = unbounded::<Value>();
+    let (sink, stream) = unbounded::<V>();
     (ProposalSender { sink }, ProposalReceiver { stream })
 }
 
 
 /// Stream for consuming proposals.
-pub struct ProposalReceiver {
-    stream: UnboundedReceiver<Value>,
+pub struct ProposalReceiver<V: Value> {
+    stream: UnboundedReceiver<V>,
 }
 
-impl Stream for ProposalReceiver {
-    type Item = Value;
+impl<V: Value> Stream for ProposalReceiver<V> {
+    type Item = V;
     type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<Value>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<V>, io::Error> {
         self.stream.poll().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::Other,
@@ -32,13 +32,13 @@ impl Stream for ProposalReceiver {
 
 /// Sink allowing proposals to be sent asynchronously.
 #[derive(Clone)]
-pub struct ProposalSender {
-    sink: UnboundedSender<Value>,
+pub struct ProposalSender<V: Value> {
+    sink: UnboundedSender<V>,
 }
 
-impl ProposalSender {
+impl<V: Value> ProposalSender<V> {
     /// Sends a proposal to the current node.
-    pub fn propose(&self, value: Value) -> io::Result<()> {
+    pub fn propose(&self, value: V) -> io::Result<()> {
         self.sink.unbounded_send(value).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::Other,
@@ -48,11 +48,11 @@ impl ProposalSender {
     }
 }
 
-impl Sink for ProposalSender {
-    type SinkItem = Value;
+impl<V: Value> Sink for ProposalSender<V> {
+    type SinkItem = V;
     type SinkError = io::Error;
 
-    fn start_send(&mut self, value: Value) -> StartSend<Value, io::Error> {
+    fn start_send(&mut self, value: V) -> StartSend<V, io::Error> {
         self.sink.start_send(value).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::Other,

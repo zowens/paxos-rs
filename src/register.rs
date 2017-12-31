@@ -1,13 +1,13 @@
 use std::rc::Rc;
 use std::cell::RefCell;
-use algo::Value;
+use algo::BytesValue;
 use super::Instance;
 use statemachine::ReplicatedState;
 
 /// Replicated mutable value register
 #[derive(Clone)]
 pub struct Register {
-    value: Rc<RefCell<Option<Value>>>,
+    value: Rc<RefCell<Option<BytesValue>>>,
 }
 
 impl Default for Register {
@@ -19,7 +19,10 @@ impl Default for Register {
 }
 
 impl ReplicatedState for Register {
-    fn apply_value(&mut self, instance: Instance, value: Value) {
+    // TODO: generic value type
+    type Command = BytesValue;
+
+    fn apply_value(&mut self, instance: Instance, value: BytesValue) {
         info!(
             "[RESOLUTION] with value at instance {}: {:?}",
             instance,
@@ -30,7 +33,7 @@ impl ReplicatedState for Register {
         *v = Some(value);
     }
 
-    fn snapshot(&self, _instance: Instance) -> Option<Value> {
+    fn snapshot(&self, _instance: Instance) -> Option<BytesValue> {
         self.value.borrow().clone()
     }
 }

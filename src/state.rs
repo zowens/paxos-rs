@@ -1,15 +1,16 @@
+use std::marker::PhantomData;
 use algo::{Ballot, Value};
 use super::Instance;
 
-pub struct State {
+pub struct State<V: Value> {
     pub instance: Instance,
-    pub current_value: Option<Value>,
+    pub current_value: Option<V>,
     pub promised: Option<Ballot>,
-    pub accepted: Option<(Ballot, Value)>,
+    pub accepted: Option<(Ballot, V)>,
 }
 
-impl Default for State {
-    fn default() -> State {
+impl<V: Value> Default for State<V> {
+    fn default() -> State<V> {
         State {
             instance: 0,
             current_value: None,
@@ -19,19 +20,19 @@ impl Default for State {
     }
 }
 
-pub struct StateHandler {}
+pub struct StateHandler<V>(PhantomData<V>);
 
-impl StateHandler {
-    pub fn new() -> StateHandler {
-        StateHandler {}
+impl<V: Value> StateHandler<V> {
+    pub fn new() -> StateHandler<V> {
+        StateHandler(PhantomData)
     }
 
-    pub fn load(&mut self) -> Option<State> {
+    pub fn load(&mut self) -> Option<State<V>> {
         // TODO: implement
         None
     }
 
-    pub fn persist(&mut self, _state: State) {
+    pub fn persist(&mut self, _state: State<V>) {
         // TODO: implement
     }
 }
