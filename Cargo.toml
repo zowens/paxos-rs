@@ -4,8 +4,8 @@ name = "paxos"
 version = "0.1.0"
 
 [dependencies]
-log = "0.3.8"
-rand = "0.3.18"
+log = "0.4"
+rand = "0.4"
 tokio-core = "0.1.11"
 futures = "0.1.17"
 env_logger = "0.4.3"
@@ -15,11 +15,7 @@ either = "1.4.0"
 tokio-io = "0.1.4"
 serde_derive = "1.0.26"
 serde_cbor = "0.8.1"
-
-[dependencies.serde]
-version = "1.0.26"
-default-features = true
-features = ["rc"]
+serde = "1.0.26"
 
 [dev-dependencies]
 assert_matches = "1.1.0"
