@@ -3,18 +3,19 @@ use std::io;
 use std::fmt;
 use std::marker::PhantomData;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_cbor::de;
 use serde_cbor::ser;
 use tokio_core::net::{UdpCodec, UdpSocket};
 use tokio_core::reactor::{Core, Handle};
-use algo::Value;
 use messages::{ClusterMessage, MultiPaxosMessage, NetworkMessage};
 use config::Configuration;
 
 #[derive(Default)]
-struct MultiPaxosCodec<V: Value + 'static>(PhantomData<V>);
+struct MultiPaxosCodec<V: DeserializeOwned + Serialize>(PhantomData<V>);
 
-impl<V: Value + 'static> UdpCodec for MultiPaxosCodec<V> {
+impl<V: DeserializeOwned + Serialize> UdpCodec for MultiPaxosCodec<V> {
     type In = Option<NetworkMessage<V>>;
     type Out = NetworkMessage<V>;
 
@@ -41,7 +42,7 @@ impl<V: Value + 'static> UdpCodec for MultiPaxosCodec<V> {
 }
 
 /// Multi-paxos node that receives and sends nodes over a network.
-pub struct NetworkedMultiPaxos<V: Value, S>
+pub struct NetworkedMultiPaxos<V, S>
 where
     S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
     S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
@@ -50,7 +51,7 @@ where
     config: Configuration,
 }
 
-impl<V: Value, S> Sink for NetworkedMultiPaxos<V, S>
+impl<V, S> Sink for NetworkedMultiPaxos<V, S>
 where
     S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
     S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
@@ -85,7 +86,7 @@ where
     }
 }
 
-impl<V: Value, S> Stream for NetworkedMultiPaxos<V, S>
+impl<V, S> Stream for NetworkedMultiPaxos<V, S>
 where
     S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
     S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
@@ -141,7 +142,10 @@ impl UdpServer {
     }
 
     /// Runs a multi-paxos node, blocking until the program is terminated.
-    pub fn run<S: 'static, V: Value + 'static>(mut self, multipaxos: S) -> Result<(), ()>
+    pub fn run<S: 'static, V: DeserializeOwned + Serialize + 'static>(
+        mut self,
+        multipaxos: S,
+    ) -> Result<(), ()>
     where
         S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
         S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,

@@ -55,7 +55,7 @@ pub type NodeId = u32;
 ///
 /// TODO: trait aliases!
 pub trait Value
-    : ser::Serialize + for<'de> de::Deserialize<'de> + PartialEq + Eq + Clone + fmt::Debug
+    : ser::Serialize + de::DeserializeOwned + PartialEq + Eq + Clone + fmt::Debug
     {
 }
 
