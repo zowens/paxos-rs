@@ -42,6 +42,7 @@ extern crate tokio_core;
 mod algo;
 mod state;
 mod statemachine;
+mod master;
 pub mod messages;
 mod multipaxos;
 mod net;

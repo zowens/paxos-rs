@@ -10,6 +10,7 @@ use statemachine::*;
 use config::*;
 use timer::*;
 use proposals::*;
+use master::*;
 
 /// An instance is a _round_ of the Paxos algorithm. Instances are chained to
 /// form a sequence of values. Once an instance receives consensus, the next
@@ -60,8 +61,8 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
 
     // timers for driving resolution
     retransmit_timer: RetransmitTimer<S, ProposerMsg<R::Command>>,
-    prepare_timer: InstanceResolutionTimer<S>,
     sync_timer: RandomPeerSyncTimer<S>,
+    master_strategy: Masterless<S>,
 }
 
 impl<R: ReplicatedState> MultiPaxos<R, FuturesScheduler> {
@@ -110,7 +111,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
         let retransmit_timer = RetransmitTimer::new(scheduler.clone());
         let sync_timer = RandomPeerSyncTimer::new(scheduler.clone());
-        let prepare_timer = InstanceResolutionTimer::new(scheduler);
+        let master_strategy = Masterless::new(scheduler);
 
         MultiPaxos {
             state_machine,
@@ -122,7 +123,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             downstream_blocked: None,
             proposal_receiver,
             retransmit_timer,
-            prepare_timer,
+            master_strategy,
             sync_timer,
         }
     }
@@ -145,7 +146,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
             PaxosInstance::new(self.config.current(), self.config.quorum_size(), None, None);
 
         self.retransmit_timer.reset();
-        self.prepare_timer.reset();
+        self.master_strategy.next_instance();
     }
 
     #[inline]
@@ -255,7 +256,6 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     fn poll_restart_prepare(&mut self, instance: Instance) {
         if instance != self.instance {
             warn!("Restart prepare for previous instance dropped");
-            self.prepare_timer.reset();
             return;
         }
 
@@ -331,7 +331,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         }
 
         // schedule a retry of PREPARE with a higher ballot
-        self.prepare_timer.schedule_retry(inst);
+        self.master_strategy.on_reject(inst);
     }
 
     fn on_accept(&mut self, peer: NodeId, inst: Instance, accept: Accept<R::Command>) {
@@ -374,7 +374,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         //
         // TODO: should we just set this up during ACCEPTED rather than REJECT
         // and ACCEPTED?
-        self.prepare_timer.schedule_timeout(inst);
+        self.master_strategy.on_accept(inst);
     }
 
     fn on_accepted(&mut self, peer: NodeId, inst: Instance, accepted: Accepted<R::Command>) {
@@ -479,7 +479,7 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
         }
 
         // poll for retry prepare
-        while let Some(inst) = from_poll(self.prepare_timer.poll())? {
+        while let Some(Action::Prepare(inst)) = from_poll(self.master_strategy.poll())? {
             self.poll_restart_prepare(inst);
         }
 
@@ -1470,7 +1470,7 @@ mod tests {
             .unwrap();
 
         // start with a new ballot
-        let stream_index = multi_paxos.prepare_timer.stream().unwrap().index;
+        let stream_index = multi_paxos.master_strategy.prepare_timer().stream().unwrap().index;
         scheduler.trigger(stream_index);
 
         let (msgs, multi_paxos) = collect_messages(multi_paxos);
@@ -1496,7 +1496,7 @@ mod tests {
         }
 
         // check that an addition prepare timer task has a new ballot
-        let stream_index = multi_paxos.prepare_timer.stream().unwrap().index;
+        let stream_index = multi_paxos.master_strategy.prepare_timer().stream().unwrap().index;
         scheduler.trigger(stream_index);
 
         let (msgs, _) = collect_messages(multi_paxos);
@@ -1531,7 +1531,7 @@ mod tests {
             config,
         );
 
-        assert!(multi_paxos.prepare_timer.stream().is_none());
+        assert!(multi_paxos.master_strategy.prepare_timer().stream().is_none());
 
         multi_paxos
             .start_send(ClusterMessage {
@@ -1548,8 +1548,8 @@ mod tests {
         assert_eq!(4, msgs.len());
 
         // start with a new ballot
-        assert!(multi_paxos.prepare_timer.stream().is_some());
-        let stream_index = multi_paxos.prepare_timer.stream().unwrap().index;
+        assert!(multi_paxos.master_strategy.prepare_timer().stream().is_some());
+        let stream_index = multi_paxos.master_strategy.prepare_timer().stream().unwrap().index;
         scheduler.trigger(stream_index);
 
         let (msgs, multi_paxos) = collect_messages(multi_paxos);
@@ -1575,7 +1575,7 @@ mod tests {
         }
 
         // check that an addition prepare timer task has a new ballot
-        let stream_index = multi_paxos.prepare_timer.stream().unwrap().index;
+        let stream_index = multi_paxos.master_strategy.prepare_timer().stream().unwrap().index;
         scheduler.trigger(stream_index);
 
         let (msgs, _) = collect_messages(multi_paxos);
