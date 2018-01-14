@@ -1,5 +1,7 @@
 # Paxos Made with Rust
 
+[![Travis](https://travis-ci.org/zowens/paxos-rs.svg?branch=master)](https://travis-ci.org/zowens/paxos-rs/)
+
 Library encapsulating Multi-Decree Paxos and variants in Rust with a builtin server using Tokio and Futures.
 
 *Development Status*: Experimental
