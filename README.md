@@ -1,15 +1,17 @@
 # Paxos Made with Rust
 
-*Development Status*: Experimental
-
 Library encapsulating Multi-Decree Paxos and variants in Rust with a builtin server using Tokio and Futures.
 
-The implementation is largely based on [a blog post by Tom Cocagne](https://understandingpaxos.wordpress.com/) and [the accompanying code](github.com/cocagne/multi-paxos-example). I
+*Development Status*: Experimental
+
+The implementation is based on [a blog post by Tom Cocagne](https://understandingpaxos.wordpress.com/) and [the accompanying code](github.com/cocagne/multi-paxos-example). I
 found the explanation and code quite easy to read and understand.
 
-This project is laregly used to gain an understanding for the subleties of Paxos and the
-variants that have been described in the literature. Over time, the goal of the project is to be as useful as other embedded consensus sytems 
-(such as the popular Raft implementations in Go) with the flexability afforded by Paxos.
+## Caution
+**This should not be used for production at this time.**
+
+## Goal
+Over time, the goal of the project is to be as useful as other embedded consensus sytems (such as the popular Raft implementations in Go) with the flexability afforded by Paxos.
 
 Additionally, this library will be used for the reconfiguration of the chain in my implementations of [chain replication](https://github.com/zowens/chain-replication).
 
