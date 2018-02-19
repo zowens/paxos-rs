@@ -1,9 +1,9 @@
 //! Messages sent within the cluster of nodes.
 use std::net::SocketAddr;
 
+use config::NodeId;
 use super::Instance;
-pub use algo::{Accept, Accepted, Ballot, Prepare, Promise, Reject};
-use algo::NodeId;
+use paxos::{Accept, Accepted, Prepare, Promise, Reject};
 
 // TODO: convert MultiPaxosMessage to struct-enum
 

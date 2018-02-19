@@ -4,20 +4,14 @@ use futures::task;
 use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
 use either::Either;
 use messages::*;
-use algo::*;
+use paxos::*;
 use state::*;
 use statemachine::*;
 use config::*;
 use timer::*;
 use proposals::*;
 use master::*;
-
-/// An instance is a _round_ of the Paxos algorithm. Instances are chained to
-/// form a sequence of values. Once an instance receives consensus, the next
-/// instance is started.
-///
-/// In some implementations, this is also called a _slot_.
-pub type Instance = u64;
+use super::Instance;
 
 /// `MultiPaxos` receives messages and attempts to receive consensus on a replicated
 /// value. Multiple instances of the paxos algorithm are chained together.
@@ -497,6 +491,7 @@ mod tests {
     use futures::executor::{spawn, Notify, NotifyHandle};
     use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
     use proposals::*;
+    use value::*;
     use super::*;
 
     #[test]

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::mem;
 use either::Either;
+use config::NodeId;
+use value::Value;
 use super::*;
 use super::messages::*;
 
@@ -674,6 +676,7 @@ impl<V: Value> PaxosInstance<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use value::BytesValue;
 
     #[test]
     fn propose_value() {

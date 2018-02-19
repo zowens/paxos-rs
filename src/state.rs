@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
-use algo::{Ballot, Value};
+use paxos::Ballot;
+use value::Value;
 use super::Instance;
 
 pub struct State<V: Value> {

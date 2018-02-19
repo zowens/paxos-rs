@@ -3,8 +3,9 @@ use std::time::Duration;
 use futures::{Async, Poll, Stream};
 use timer::{InstanceResolutionTimer, Scheduler};
 use super::Instance;
-use algo::{Ballot, NodeId, PaxosInstance, Value};
-use config::Configuration;
+use paxos::{Ballot, PaxosInstance};
+use value::Value;
+use config::{NodeId, Configuration};
 
 // TODO: rename this
 

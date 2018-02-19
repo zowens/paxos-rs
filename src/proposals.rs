@@ -1,7 +1,7 @@
 use std::io;
 use futures::{Poll, Sink, StartSend, Stream};
 use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
-use algo::Value;
+use value::Value;
 
 /// Creates a sink and stream pair for proposals.
 pub fn proposal_channel<V: Value>() -> (ProposalSender<V>, ProposalReceiver<V>) {

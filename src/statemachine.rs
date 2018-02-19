@@ -1,4 +1,4 @@
-use algo::Value;
+use value::Value;
 use super::Instance;
 
 /// `ReplicatedState` is a state machine that applies value synchronously. The

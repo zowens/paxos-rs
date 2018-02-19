@@ -4,8 +4,11 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::cell::{Ref, RefCell};
-use algo::NodeId;
 use rand::{weak_rng, Rng, XorShiftRng};
+
+/// A `NodeId` is a unique value that identifies a node
+/// within the configuration.
+pub type NodeId = u32;
 
 struct Inner {
     peers: HashMap<NodeId, SocketAddr>,

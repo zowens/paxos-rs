@@ -37,27 +37,35 @@ extern crate serde_derive;
 extern crate test;
 extern crate tokio_core;
 
-mod algo;
+pub mod paxos;
 mod state;
 mod statemachine;
 mod master;
 pub mod messages;
-mod multipaxos;
+pub mod multipaxos;
 mod net;
 mod register;
-mod config;
+pub mod config;
 pub mod timer;
 mod proposals;
+mod value;
 
-pub use multipaxos::{Instance, MultiPaxos};
 pub use statemachine::ReplicatedState;
 pub use net::UdpServer;
 pub use register::Register;
-pub use config::{Configuration, PeerIntoIter, PeerIter};
-pub use algo::{BytesValue, NodeId, Value};
+pub use config::Configuration;
 pub use proposals::ProposalSender;
+pub use value::{Value, BytesValue};
 use timer::{FuturesScheduler, Scheduler};
 use master::{DistinguishedProposer, MasterStrategy, Masterless};
+use multipaxos::MultiPaxos;
+
+/// An instance is a _round_ of the Paxos algorithm. Instances are chained to
+/// form a sequence of values. Once an instance receives consensus, the next
+/// instance is started.
+///
+/// In some implementations, this is also called a _slot_.
+pub type Instance = u64;
 
 /// Builder for the MultiPaxos node
 pub struct MultiPaxosBuilder<R: ReplicatedState, M: MasterStrategy, S: Scheduler> {

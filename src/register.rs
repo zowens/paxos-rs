@@ -1,8 +1,8 @@
 use std::rc::Rc;
 use std::cell::RefCell;
-use algo::BytesValue;
 use super::Instance;
 use statemachine::ReplicatedState;
+use value::BytesValue;
 
 /// Replicated mutable value register
 #[derive(Clone)]
