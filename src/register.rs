@@ -25,8 +25,7 @@ impl ReplicatedState for Register {
     fn apply_value(&mut self, instance: Instance, value: BytesValue) {
         info!(
             "[RESOLUTION] with value at instance {}: {:?}",
-            instance,
-            value
+            instance, value
         );
 
         let mut v = self.value.borrow_mut();

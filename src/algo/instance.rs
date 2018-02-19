@@ -100,6 +100,14 @@ impl<V: Value> Proposer<V> {
         Prepare(new_ballot)
     }
 
+    /// Revokes leadership status
+    fn revoke_leadership(&mut self) {
+        if let ProposerState::Leader { .. } = self.state {
+            info!("Revoking Phase 1 quorum from Proposer");
+            self.state = ProposerState::Empty;
+        }
+    }
+
     /// Proposes a value once Phase 1 is completed. It is not guaranteed that the value will
     /// be accepted, as the maximum accepted value from acceptors is used as preference.
     ///
@@ -136,9 +144,7 @@ impl<V: Value> Proposer<V> {
         let Reject(proposed, promised) = reject;
         debug!(
             "Received REJECT for {:?} with greater {:?} from peer {}",
-            proposed,
-            promised,
-            peer
+            proposed, promised, peer
         );
         assert!(
             proposed < promised,
@@ -272,8 +278,7 @@ impl<V: Value> Acceptor<V> {
         let Prepare(proposal) = prepare;
 
         debug_assert_eq!(
-            peer,
-            proposal.1,
+            peer, proposal.1,
             "Proposal should be from the same numbered peer"
         );
 
@@ -309,8 +314,7 @@ impl<V: Value> Acceptor<V> {
             Some(b) => {
                 debug!(
                     "Rejecting ACCEPT message with ballot {:?} because of greater {:?}",
-                    proposal,
-                    b
+                    proposal, b
                 );
                 Either::Right(Reject(proposal, b).reply_to(peer))
             }
@@ -332,7 +336,6 @@ impl<V: Value> Acceptor<V> {
         }
     }
 }
-
 
 /// Tracking of the proposal within the learner state machien
 #[derive(Debug)]
@@ -435,16 +438,14 @@ impl<V: Value> Learner<V> {
                 // insert the ACCEPTED as part of the ballot
                 debug!("Accepted {:?} for peer={}", proposal, peer);
                 let quorum = self.quorum;
-                let mut proposal_status = proposals.entry(proposal).or_insert_with(|| {
-                    ProposalStatus {
+                let mut proposal_status =
+                    proposals.entry(proposal).or_insert_with(|| ProposalStatus {
                         acceptors: QuorumSet::with_size(quorum),
                         value: value.clone(),
-                    }
-                });
+                    });
 
                 debug_assert_eq!(
-                    value,
-                    proposal_status.value,
+                    value, proposal_status.value,
                     "Values for acceptor value does not match value from ACCEPTED message"
                 );
                 proposal_status.acceptors.insert(peer);
@@ -510,6 +511,39 @@ impl<V: Value> PaxosInstance<V> {
         }
     }
 
+    /// Creates an instance for which the current node is the leader.
+    pub fn with_leadership(
+        current: NodeId,
+        quorum: usize,
+        previous_ballot: Ballot,
+    ) -> PaxosInstance<V> {
+        // TODO: if `accepted` is Some, add to learner
+
+        PaxosInstance {
+            proposer: Proposer {
+                state: ProposerState::Leader {
+                    proposal: previous_ballot,
+                    value: None,
+                    rejections: QuorumSet::with_size(quorum),
+                },
+                highest: Some(previous_ballot),
+                current,
+                quorum,
+            },
+            acceptor: Acceptor {
+                promised: Some(previous_ballot),
+                accepted: None,
+            },
+            learner: Learner {
+                state: LearnerState::AwaitQuorum {
+                    proposals: HashMap::with_capacity(quorum * 2),
+                    acceptors: HashMap::with_capacity(quorum * 2),
+                },
+                quorum,
+            },
+        }
+    }
+
     /// Starts Phase 1 with a possibly new PREPARE message.
     pub fn prepare(&mut self) -> Prepare {
         let prepare = self.proposer.force_prepare();
@@ -555,6 +589,11 @@ impl<V: Value> PaxosInstance<V> {
             }
             v => v,
         }
+    }
+
+    /// Revokes Phase 1 quorum from the proposer when a master lease has expired.
+    pub fn revoke_leadership(&mut self) {
+        self.proposer.revoke_leadership();
     }
 
     /// Handler for a PROMISE from a peer. An ACCEPT message is returned if quorum is detected.
@@ -624,6 +663,11 @@ impl<V: Value> PaxosInstance<V> {
     ) -> Option<Resolution<V>> {
         self.proposer.observe_ballot(accepted.0);
         self.learner.receive_accepted(peer, accepted)
+    }
+
+    /// Ballot that was last promised to a proposer
+    pub fn last_promised(&self) -> Option<Ballot> {
+        self.acceptor.promised
     }
 }
 

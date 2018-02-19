@@ -22,11 +22,9 @@ impl<V: DeserializeOwned + Serialize> UdpCodec for MultiPaxosCodec<V> {
     fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<NetworkMessage<V>>> {
         Ok(de::from_slice::<MultiPaxosMessage<V>>(buf)
             .map_err(|e| error!("Error deserializing message {:?}", e))
-            .map(|m| {
-                NetworkMessage {
-                    address: *addr,
-                    message: m,
-                }
+            .map(|m| NetworkMessage {
+                address: *addr,
+                message: m,
             })
             .ok())
     }

@@ -8,7 +8,8 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! # use paxos::{Register, MultiPaxos, Configuration, UdpServer, proposal_channel};
+//! # use paxos::{Register, MultiPaxos, Configuration, UdpServer, proposal_channel, FuturesScheduler};
+//! # use paxos::master::Masterless;
 //! let register = Register::default();
 //! let config = Configuration::new(
 //!     (0u32, "127.0.0.1:4000".parse().unwrap()),
@@ -16,7 +17,14 @@
 //!          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
 //!
 //! let (proposal_sink, proposal_stream) = proposal_channel();
-//! let multipaxos = MultiPaxos::new(proposal_stream, register, config.clone());
+//! let master_strategy = Masterless::new(config.clone(), FuturesScheduler);
+//! let multipaxos = MultiPaxos::new(
+//!     FuturesScheduler,
+//!     proposal_stream,
+//!     register,
+//!     config.clone(),
+//!     master_strategy
+//! );
 //!
 //! let server = UdpServer::new(config).unwrap();
 //! server.run(multipaxos).unwrap();
@@ -42,7 +50,7 @@ extern crate tokio_core;
 mod algo;
 mod state;
 mod statemachine;
-mod master;
+pub mod master;
 pub mod messages;
 mod multipaxos;
 mod net;

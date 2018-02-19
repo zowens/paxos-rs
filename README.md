@@ -47,7 +47,7 @@ cargo build --release
 - [ ] Multi-Paxos
     - [X] Masterless
     - [ ] Master Leases
-        - [ ] Distinguished Proposer
+        - [X] Distinguished Proposer
         - [ ] Distinguished Learner
         - [ ] Write Batching
     - [ ] Reconfiguration

@@ -35,16 +35,24 @@ pub type Instance = u64;
 /// # Example
 ///
 /// ```rust
-/// # use paxos::{Register, MultiPaxos, Configuration, proposal_channel};
+/// # use paxos::{Register, MultiPaxos, Configuration, UdpServer, proposal_channel, FuturesScheduler};
+/// # use paxos::master::Masterless;
 /// let register = Register::default();
 /// let (proposal_sink, proposal_stream) = proposal_channel();
 /// let config = Configuration::new(
 ///     (0u32, "127.0.0.1:4000".parse().unwrap()),
 ///     vec![(1, "127.0.0.1:4001".parse().unwrap()),
 ///          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
-/// let multipaxos = MultiPaxos::new(proposal_stream, register, config);
+/// let master_strategy = Masterless::new(config.clone(), FuturesScheduler);
+/// let multipaxos = MultiPaxos::new(
+///     FuturesScheduler,
+///     proposal_stream,
+///     register,
+///     config.clone(),
+///     master_strategy
+/// );
 /// ```
-pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
+pub struct MultiPaxos<R: ReplicatedState, M: MasterStrategy, S: Scheduler = FuturesScheduler> {
     state_machine: R,
     state_handler: StateHandler<R::Command>,
 
@@ -62,26 +70,12 @@ pub struct MultiPaxos<R: ReplicatedState, S: Scheduler = FuturesScheduler> {
     // timers for driving resolution
     retransmit_timer: RetransmitTimer<S, ProposerMsg<R::Command>>,
     sync_timer: RandomPeerSyncTimer<S>,
-    master_strategy: Masterless<S>,
+    master_strategy: M,
 }
 
-impl<R: ReplicatedState> MultiPaxos<R, FuturesScheduler> {
-    /// Creates a multi-paxos node.
-    ///
-    /// # Arguments
-    /// * `proposal_receiver` - Stream containing proposals for the node
-    /// * `state_machine` - The finite state machine used to apply decided commands.
-    /// * `config` - The initial membership of the cluster in which the node participats.
-    pub fn new(
-        proposal_receiver: ProposalReceiver<R::Command>,
-        state_machine: R,
-        config: Configuration,
-    ) -> MultiPaxos<R, FuturesScheduler> {
-        MultiPaxos::with_scheduler(FuturesScheduler, proposal_receiver, state_machine, config)
-    }
-}
+impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
+    // TODO: builder
 
-impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// Creates a multi-paxos node.
     ///
     /// # Arguments
@@ -89,12 +83,14 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     /// * `proposal_receiver` - Stream containing proposals for the node
     /// * `state_machine` - The finite state machine used to apply decided commands.
     /// * `config` - The initial membership of the cluster in which the node participats.
-    pub fn with_scheduler(
+    /// * `master_strategy` - The strategy used to implement master or masterless.
+    pub fn new(
         scheduler: S,
         proposal_receiver: ProposalReceiver<R::Command>,
         mut state_machine: R,
         config: Configuration,
-    ) -> MultiPaxos<R, S> {
+        master_strategy: M,
+    ) -> MultiPaxos<R, M, S> {
         let mut state_handler = StateHandler::<R::Command>::new();
 
         let state = state_handler.load().unwrap_or_default();
@@ -110,8 +106,7 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         }
 
         let retransmit_timer = RetransmitTimer::new(scheduler.clone());
-        let sync_timer = RandomPeerSyncTimer::new(scheduler.clone());
-        let master_strategy = Masterless::new(scheduler);
+        let sync_timer = RandomPeerSyncTimer::new(scheduler);
 
         MultiPaxos {
             state_machine,
@@ -129,24 +124,34 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     /// Moves to the next instance with an accepted value
-    fn advance_instance(&mut self, instance: Instance, value: R::Command) {
+    fn advance_instance(
+        &mut self,
+        instance: Instance,
+        accepted_bal: Option<Ballot>,
+        value: R::Command,
+    ) {
         self.state_machine.apply_value(instance, value.clone());
 
         let new_inst = instance + 1;
         self.instance = new_inst;
 
+        self.paxos = self.master_strategy.next_instance(instance, accepted_bal);
+
         info!("Starting instance {}", new_inst);
         self.state_handler.persist(State {
             instance: new_inst,
             current_value: Some(value),
-            promised: None,
+            promised: self.paxos.last_promised(),
             accepted: None,
         });
-        self.paxos =
-            PaxosInstance::new(self.config.current(), self.config.quorum_size(), None, None);
 
         self.retransmit_timer.reset();
-        self.master_strategy.next_instance();
+
+        // unblock blocked task in order to poll timing futures,
+        // which may not be triggered already via a message send
+        if let Some(task) = self.downstream_blocked.take() {
+            task.notify();
+        }
     }
 
     #[inline]
@@ -165,12 +170,11 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
         let peers = self.config.peers();
         let inst = self.instance;
-        self.downstream.extend(peers.into_iter().map(move |peer| {
-            ClusterMessage {
+        self.downstream
+            .extend(peers.into_iter().map(move |peer| ClusterMessage {
                 peer,
                 message: MultiPaxosMessage::Prepare(inst, prepare.clone()),
-            }
-        }));
+            }));
 
         if let Some(task) = self.downstream_blocked.take() {
             task.notify();
@@ -183,12 +187,11 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
         let peers = self.config.peers();
         let inst = self.instance;
-        self.downstream.extend(peers.into_iter().map(move |peer| {
-            ClusterMessage {
+        self.downstream
+            .extend(peers.into_iter().map(move |peer| ClusterMessage {
                 peer,
                 message: MultiPaxosMessage::Accept(inst, accept.clone()),
-            }
-        }));
+            }));
 
         if let Some(task) = self.downstream_blocked.take() {
             task.notify();
@@ -201,12 +204,11 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
         let inst = self.instance;
         let peers = self.config.peers();
-        self.downstream.extend(peers.into_iter().map(move |peer| {
-            ClusterMessage {
+        self.downstream
+            .extend(peers.into_iter().map(move |peer| ClusterMessage {
                 peer,
                 message: MultiPaxosMessage::Accepted(inst, accepted.clone()),
-            }
-        }));
+            }));
 
         if let Some(task) = self.downstream_blocked.take() {
             task.notify();
@@ -214,20 +216,28 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
     }
 
     fn propose_update(&mut self, value: R::Command) {
-        let inst = self.instance;
-        match self.paxos.propose_value(value) {
-            Some(Either::Left(prepare)) => {
-                info!("Starting Phase 1a with proposed value");
-                self.send_prepare(&prepare);
-                self.retransmit_timer.schedule(inst, Either::Left(prepare));
+        match self.master_strategy.proposal_action() {
+            ProposalAction::CurrentNode => {
+                let inst = self.instance;
+                match self.paxos.propose_value(value) {
+                    Some(Either::Left(prepare)) => {
+                        info!("Starting Phase 1a with proposed value");
+                        self.send_prepare(&prepare);
+                        self.retransmit_timer.schedule(inst, Either::Left(prepare));
+                    }
+                    Some(Either::Right(accept)) => {
+                        info!("Starting Phase 2a with proposed value");
+                        self.send_accept(&accept);
+                        self.retransmit_timer.schedule(inst, Either::Right(accept));
+                    }
+                    None => {
+                        // TODO: pipelining should help with this
+                        warn!("Alrady have a value during proposal phases");
+                    }
+                }
             }
-            Some(Either::Right(accept)) => {
-                info!("Starting Phase 2a with proposed value");
-                self.send_accept(&accept);
-                self.retransmit_timer.schedule(inst, Either::Right(accept));
-            }
-            None => {
-                warn!("Alrady have a value during proposal phases");
+            ProposalAction::Redirect(node) => {
+                self.send_multipaxos(node, MultiPaxosMessage::RedirectProposal(value));
             }
         }
     }
@@ -351,11 +361,11 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
 
                 self.send_accepted(&accepted);
             }
-            Either::Left((accepted, Some(Resolution(_, v)))) => {
+            Either::Left((accepted, Some(Resolution(bal, v)))) => {
                 trace!("Quorum after ACCEPT received");
 
                 self.send_accepted(&accepted);
-                self.advance_instance(inst, v);
+                self.advance_instance(inst, Some(bal), v);
 
                 // prevent setting the prepare timer
                 return;
@@ -386,8 +396,8 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         let resol = self.paxos.receive_accepted(peer, accepted);
 
         // if there is quorum, we can advance to the next instance
-        if let Some(Resolution(_, value)) = resol {
-            self.advance_instance(inst, value);
+        if let Some(Resolution(bal, value)) = resol {
+            self.advance_instance(inst, Some(bal), value);
         }
     }
 
@@ -416,12 +426,12 @@ impl<R: ReplicatedState, S: Scheduler> MultiPaxos<R, S> {
         if inst > self.instance {
             // TODO: this call shouldn't have a random -1 without reason...
             // probably should fix advance_instance logic
-            self.advance_instance(inst - 1, current);
+            self.advance_instance(inst - 1, None, current);
         }
     }
 }
 
-impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
+impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Sink for MultiPaxos<R, M, S> {
     type SinkItem = ClusterMessage<R::Command>;
     type SinkError = io::Error;
 
@@ -450,6 +460,9 @@ impl<R: ReplicatedState, S: Scheduler> Sink for MultiPaxos<R, S> {
             MultiPaxosMessage::Catchup(inst, value) => {
                 self.on_catchup(inst, value);
             }
+            MultiPaxosMessage::RedirectProposal(value) => {
+                self.propose_update(value);
+            }
         }
 
         Ok(AsyncSink::Ready)
@@ -469,7 +482,7 @@ fn from_poll<V>(s: Poll<Option<V>, io::Error>) -> io::Result<Option<V>> {
     }
 }
 
-impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
+impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Stream for MultiPaxos<R, M, S> {
     type Item = ClusterMessage<R::Command>;
     type Error = io::Error;
     fn poll(&mut self) -> Poll<Option<ClusterMessage<R::Command>>, io::Error> {
@@ -478,9 +491,12 @@ impl<R: ReplicatedState, S: Scheduler> Stream for MultiPaxos<R, S> {
             self.poll_retransmit(inst, msg);
         }
 
-        // poll for retry prepare
-        while let Some(Action::Prepare(inst)) = from_poll(self.master_strategy.poll())? {
-            self.poll_restart_prepare(inst);
+        // poll for master-related actions
+        while let Some(action) = from_poll(self.master_strategy.poll())? {
+            match action {
+                Action::Prepare(inst) => self.poll_restart_prepare(inst),
+                Action::RelasePhaseOneQuorum => self.paxos.revoke_leadership(),
+            }
         }
 
         // poll for sync
@@ -526,8 +542,13 @@ mod tests {
 
         let (_, stream) = proposal_channel();
 
-        let mut multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let mut multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         // advance when instance > current
         multi_paxos
@@ -569,8 +590,13 @@ mod tests {
 
         let (_, stream) = proposal_channel();
 
-        let mut multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let mut multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         // force instance to instance=2
         multi_paxos
@@ -624,8 +650,13 @@ mod tests {
 
         let (sink, stream) = proposal_channel();
 
-        let multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         sink.propose(vec![0x0, 0xe].into()).unwrap();
 
@@ -659,8 +690,13 @@ mod tests {
 
         let (_, stream) = proposal_channel();
 
-        let mut multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let mut multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         // peer 2 sends instance > current
         multi_paxos
@@ -677,7 +713,6 @@ mod tests {
                 message: MultiPaxosMessage::Prepare(0, Prepare(Ballot(5, 1))),
             })
             .unwrap();
-
 
         // promise Ballot(5, 1)
         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
@@ -761,11 +796,15 @@ mod tests {
 
         let (sink, stream) = proposal_channel();
 
-        let multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         sink.propose(vec![0x0, 0xe, 0xb, 0x11].into()).unwrap();
-
 
         // ensure prepare messages sent out
         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
@@ -837,11 +876,15 @@ mod tests {
 
         let (sink, stream) = proposal_channel();
 
-        let multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         sink.propose(vec![0xab, 0xb, 0x11].into()).unwrap();
-
 
         // ensure prepare messages sent out
         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
@@ -921,8 +964,13 @@ mod tests {
 
         let (_, stream) = proposal_channel();
 
-        let mut multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let mut multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         // receive accept for wrong instance
         multi_paxos
@@ -1011,8 +1059,13 @@ mod tests {
 
         let (_, stream) = proposal_channel();
 
-        let mut multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let mut multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         // receive accept for wrong instance
         multi_paxos
@@ -1084,8 +1137,13 @@ mod tests {
 
         let (_, stream) = proposal_channel();
 
-        let mut multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let mut multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         // receive accepted for wrong instance
         multi_paxos
@@ -1175,8 +1233,13 @@ mod tests {
 
         let (_, stream) = proposal_channel();
 
-        let mut multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let mut multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         // receive accept (causes 3 and 0 to be added for tracking of quorum)
         multi_paxos
@@ -1230,8 +1293,13 @@ mod tests {
 
         let (_, stream) = proposal_channel();
 
-        let mut multi_paxos =
-            MultiPaxos::with_scheduler(NoOpScheduler, stream, TestStateMachine::default(), config);
+        let mut multi_paxos = MultiPaxos::new(
+            NoOpScheduler,
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            Masterless::new(config.clone(), NoOpScheduler),
+        );
 
         // receive ACCEPTED prior to ACCEPT
         multi_paxos
@@ -1286,11 +1354,12 @@ mod tests {
 
         let (_, stream) = proposal_channel();
         let scheduler = IndexedScheduler::new();
-        let multi_paxos = MultiPaxos::with_scheduler(
+        let multi_paxos = MultiPaxos::new(
             scheduler.clone(),
             stream,
             TestStateMachine::default(),
-            config,
+            config.clone(),
+            Masterless::new(config.clone(), scheduler.clone()),
         );
 
         let (msgs, multi_paxos) = collect_messages(multi_paxos);
@@ -1325,11 +1394,12 @@ mod tests {
 
         let (proposal, stream) = proposal_channel();
         let scheduler = IndexedScheduler::new();
-        let multi_paxos = MultiPaxos::with_scheduler(
+        let multi_paxos = MultiPaxos::new(
             scheduler.clone(),
             stream,
             TestStateMachine::default(),
-            config,
+            config.clone(),
+            Masterless::new(config.clone(), scheduler.clone()),
         );
 
         let (msgs, multi_paxos) = collect_messages(multi_paxos);
@@ -1379,11 +1449,12 @@ mod tests {
 
         let (proposal, stream) = proposal_channel();
         let scheduler = IndexedScheduler::new();
-        let multi_paxos = MultiPaxos::with_scheduler(
+        let multi_paxos = MultiPaxos::new(
             scheduler.clone(),
             stream,
             TestStateMachine::default(),
-            config,
+            config.clone(),
+            Masterless::new(config.clone(), scheduler.clone()),
         );
 
         // go to phase 2
@@ -1448,11 +1519,12 @@ mod tests {
 
         let (proposal, stream) = proposal_channel();
         let scheduler = IndexedScheduler::new();
-        let multi_paxos = MultiPaxos::with_scheduler(
+        let multi_paxos = MultiPaxos::new(
             scheduler.clone(),
             stream,
             TestStateMachine::default(),
-            config,
+            config.clone(),
+            Masterless::new(config.clone(), scheduler.clone()),
         );
 
         let (msgs, multi_paxos) = collect_messages(multi_paxos);
@@ -1470,7 +1542,12 @@ mod tests {
             .unwrap();
 
         // start with a new ballot
-        let stream_index = multi_paxos.master_strategy.prepare_timer().stream().unwrap().index;
+        let stream_index = multi_paxos
+            .master_strategy
+            .prepare_timer()
+            .stream()
+            .unwrap()
+            .index;
         scheduler.trigger(stream_index);
 
         let (msgs, multi_paxos) = collect_messages(multi_paxos);
@@ -1496,7 +1573,12 @@ mod tests {
         }
 
         // check that an addition prepare timer task has a new ballot
-        let stream_index = multi_paxos.master_strategy.prepare_timer().stream().unwrap().index;
+        let stream_index = multi_paxos
+            .master_strategy
+            .prepare_timer()
+            .stream()
+            .unwrap()
+            .index;
         scheduler.trigger(stream_index);
 
         let (msgs, _) = collect_messages(multi_paxos);
@@ -1524,14 +1606,21 @@ mod tests {
 
         let (_, stream) = proposal_channel();
         let scheduler = IndexedScheduler::new();
-        let mut multi_paxos = MultiPaxos::with_scheduler(
+        let mut multi_paxos = MultiPaxos::new(
             scheduler.clone(),
             stream,
             TestStateMachine::default(),
-            config,
+            config.clone(),
+            Masterless::new(config.clone(), scheduler.clone()),
         );
 
-        assert!(multi_paxos.master_strategy.prepare_timer().stream().is_none());
+        assert!(
+            multi_paxos
+                .master_strategy
+                .prepare_timer()
+                .stream()
+                .is_none()
+        );
 
         multi_paxos
             .start_send(ClusterMessage {
@@ -1548,8 +1637,19 @@ mod tests {
         assert_eq!(4, msgs.len());
 
         // start with a new ballot
-        assert!(multi_paxos.master_strategy.prepare_timer().stream().is_some());
-        let stream_index = multi_paxos.master_strategy.prepare_timer().stream().unwrap().index;
+        assert!(
+            multi_paxos
+                .master_strategy
+                .prepare_timer()
+                .stream()
+                .is_some()
+        );
+        let stream_index = multi_paxos
+            .master_strategy
+            .prepare_timer()
+            .stream()
+            .unwrap()
+            .index;
         scheduler.trigger(stream_index);
 
         let (msgs, multi_paxos) = collect_messages(multi_paxos);
@@ -1575,7 +1675,12 @@ mod tests {
         }
 
         // check that an addition prepare timer task has a new ballot
-        let stream_index = multi_paxos.master_strategy.prepare_timer().stream().unwrap().index;
+        let stream_index = multi_paxos
+            .master_strategy
+            .prepare_timer()
+            .stream()
+            .unwrap()
+            .index;
         scheduler.trigger(stream_index);
 
         let (msgs, _) = collect_messages(multi_paxos);
@@ -1588,15 +1693,79 @@ mod tests {
         }
     }
 
-    fn collect_messages<S: Scheduler>(
-        multi_paxos: MultiPaxos<TestStateMachine, S>,
+    #[test]
+    fn proposal_redirection() {
+        struct RedirectMasterStrategy(Configuration);
+
+        impl MasterStrategy for RedirectMasterStrategy {
+            fn next_instance<V: Value>(
+                &mut self,
+                _inst: Instance,
+                _accepted_bal: Option<Ballot>,
+            ) -> PaxosInstance<V> {
+                PaxosInstance::new(self.0.current(), self.0.quorum_size(), None, None)
+            }
+
+            fn on_reject(&mut self, _inst: Instance) {}
+            fn on_accept(&mut self, _inst: Instance) {}
+
+            fn proposal_action(&self) -> ProposalAction {
+                ProposalAction::Redirect(4)
+            }
+        }
+
+        impl Stream for RedirectMasterStrategy {
+            type Item = Action;
+            type Error = io::Error;
+
+            fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+                Ok(Async::NotReady)
+            }
+        }
+
+        let config = Configuration::new(
+            (0u32, "127.0.0.1:4000".parse().unwrap()),
+            vec![
+                (1, "127.0.0.1:4001".parse().unwrap()),
+                (2, "127.0.0.1:4002".parse().unwrap()),
+                (3, "127.0.0.1:4003".parse().unwrap()),
+                (4, "127.0.0.1:4004".parse().unwrap()),
+            ].into_iter(),
+        );
+
+        assert_eq!(3, config.quorum_size());
+
+        let (sink, stream) = proposal_channel();
+        let multi_paxos = MultiPaxos::new(
+            NoOpScheduler {},
+            stream,
+            TestStateMachine::default(),
+            config.clone(),
+            RedirectMasterStrategy(config.clone()),
+        );
+
+        sink.propose(b"hello".to_vec().into()).unwrap();
+
+        // assert the proposal is redirected
+        let (msgs, _) = collect_messages(multi_paxos);
+        assert_eq!(1, msgs.len());
+        assert_eq!(
+            ClusterMessage {
+                peer: 4,
+                message: MultiPaxosMessage::RedirectProposal(b"hello".to_vec().into()),
+            },
+            msgs[0]
+        );
+    }
+
+    fn collect_messages<S: Scheduler, M: MasterStrategy>(
+        multi_paxos: MultiPaxos<TestStateMachine, M, S>,
     ) -> (
         Vec<ClusterMessage<BytesValue>>,
-        MultiPaxos<TestStateMachine, S>,
+        MultiPaxos<TestStateMachine, M, S>,
     ) {
         let mut s = spawn(multi_paxos);
         let h = notify_noop();
-
 
         let mut msgs = vec![];
         while let Async::Ready(Some(v)) = s.poll_stream_notify(&h, 120).unwrap() {

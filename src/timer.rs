@@ -126,7 +126,6 @@ impl<S: Scheduler, V: Clone> Stream for RetransmitTimer<S, V> {
     }
 }
 
-
 /// Timer that allows the node to re-enter Phase 1 in order to
 /// drive resolution with a higher ballot.
 pub struct InstanceResolutionTimer<S: Scheduler> {

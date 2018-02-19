@@ -50,7 +50,6 @@ impl Reject {
     }
 }
 
-
 /// `ACCEPTED` is the Phase 2b message that is broadcast from acceptors
 /// denoting acceptance of a value.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]

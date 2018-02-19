@@ -5,6 +5,8 @@ use super::Instance;
 pub use algo::{Accept, Accepted, Ballot, Prepare, Promise, Reject};
 use algo::NodeId;
 
+// TODO: convert MultiPaxosMessage to struct-enum
+
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 /// Message generated within the cluster.
 pub enum MultiPaxosMessage<V> {
@@ -37,6 +39,9 @@ pub enum MultiPaxosMessage<V> {
 
     /// Response to a sync request from another peer
     Catchup(Instance, V),
+
+    /// Redirects a proposal from one node to the Distinguished Proposer
+    RedirectProposal(V),
 }
 
 /// Message sent over the network.

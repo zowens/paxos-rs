@@ -10,7 +10,6 @@ pub fn proposal_channel<V: Value>() -> (ProposalSender<V>, ProposalReceiver<V>) 
     (ProposalSender { sink }, ProposalReceiver { stream })
 }
 
-
 /// Stream for consuming proposals.
 pub struct ProposalReceiver<V: Value> {
     stream: UnboundedReceiver<V>,

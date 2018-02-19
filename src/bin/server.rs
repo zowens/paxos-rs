@@ -15,8 +15,9 @@ use tokio_core::net::TcpListener;
 use tokio_core::reactor::Handle;
 use tokio_io::AsyncRead;
 use tokio_io::codec::LinesCodec;
-use paxos::{proposal_channel, BytesValue, Configuration, MultiPaxos, ProposalSender, Register,
-            ReplicatedState, UdpServer};
+use paxos::{proposal_channel, BytesValue, Configuration, FuturesScheduler, MultiPaxos,
+            ProposalSender, Register, ReplicatedState, UdpServer};
+use paxos::master::DistinguishedProposer;
 
 fn local_config(node: u16) -> (Configuration, SocketAddr) {
     assert!(node < 3);
@@ -107,7 +108,15 @@ pub fn main() {
     let register = Register::default();
     let server = UdpServer::new(config.clone()).unwrap();
     let (proposal_sink, proposal_stream) = proposal_channel();
-    let multi_paxos = MultiPaxos::new(proposal_stream, register.clone(), config);
+    let scheduler = FuturesScheduler::default();
+    let master_strategy = DistinguishedProposer::new(config.clone(), scheduler.clone());
+    let multi_paxos = MultiPaxos::new(
+        scheduler,
+        proposal_stream,
+        register.clone(),
+        config,
+        master_strategy,
+    );
     spawn_client_handler(register, client_addr, server.handle(), proposal_sink);
     server.run(multi_paxos).unwrap();
 }

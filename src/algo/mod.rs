@@ -59,7 +59,6 @@ pub trait Value
     {
 }
 
-
 /// Command value that the cluster members agree upon to reach consensus.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BytesValue(Rc<[u8]>);
@@ -135,6 +134,7 @@ impl<'de> de::Visitor<'de> for BytesValueVisitor {
     }
 }
 
+// TODO: move into config module, or new module for quorums
 /// `QuorumSet` tracks nodes that have sent certain messages and will
 /// detect when quorum is reached. Duplicates are treated as a single
 /// message to determine quorum.
