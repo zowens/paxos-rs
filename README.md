@@ -41,7 +41,7 @@ cargo build --release
 ```
 
 ## Progress
-- [ ] Paxos Algorithm
+- [X] Paxos Algorithm
     - [X] Core algorithm
     - [ ] Persistent Storage
 - [ ] Multi-Paxos
@@ -49,12 +49,13 @@ cargo build --release
     - [ ] Master Leases
         - [X] Distinguished Proposer
         - [ ] Distinguished Learner
-        - [ ] Write Batching
+        - [ ] Read leases
     - [ ] Reconfiguration
         - [ ] Member-specific state machine
         - [ ] Learners ("observers")
     - [ ] Client Protocol
         - [ ] Membership-aware protocol
+    - [ ] Pipelining
 - [ ] Generalized Replicated State Machine
     - [X] Mutable Register
     - [ ] Asynchronous State Machine
@@ -67,7 +68,6 @@ cargo build --release
 - [ ] Engineering
     - [ ] Generic command and value types
     - [ ] Embeddable Library
-    - [ ] Reject for wrong instance (rather than ignore)
     - [ ] Jepsen Testing
     - [ ] Configuration of timeouts and other internals
     - [ ] UDP vs. TCP
