@@ -7,6 +7,8 @@ use algo::{Ballot, NodeId, PaxosInstance, Value};
 use config::Configuration;
 
 // TODO: rename this
+
+/// Actions that `MultiPaxos` must do to utilize the master strategy.
 #[derive(Debug)]
 pub enum Action {
     /// Send when the current instance needs to issue a PREPARE with
@@ -62,7 +64,7 @@ impl<S: Scheduler> Masterless<S> {
     }
 
     #[cfg(test)]
-    pub fn prepare_timer(&self) -> &InstanceResolutionTimer<S> {
+    pub(crate) fn prepare_timer(&self) -> &InstanceResolutionTimer<S> {
         &self.prepare_timer
     }
 }

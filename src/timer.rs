@@ -1,3 +1,4 @@
+//! Timing abstractions that implement types from the `futures` crate.
 use std::cmp::min;
 use std::io;
 use std::mem;
@@ -78,7 +79,7 @@ impl<S: Scheduler, M: Clone> TimerState<S, M> {
 
 /// Timer that will resend a message to the downstream peers in order
 /// to drive consensus.
-pub struct RetransmitTimer<S: Scheduler, V: Clone> {
+pub(crate) struct RetransmitTimer<S: Scheduler, V: Clone> {
     scheduler: S,
     state: TimerState<S, (Instance, V)>,
 }
@@ -128,7 +129,7 @@ impl<S: Scheduler, V: Clone> Stream for RetransmitTimer<S, V> {
 
 /// Timer that allows the node to re-enter Phase 1 in order to
 /// drive resolution with a higher ballot.
-pub struct InstanceResolutionTimer<S: Scheduler> {
+pub(crate) struct InstanceResolutionTimer<S: Scheduler> {
     scheduler: S,
     backoff_ms: u64,
     state: TimerState<S, Instance>,
@@ -196,7 +197,7 @@ impl<S: Scheduler> Stream for InstanceResolutionTimer<S> {
 }
 
 /// Timer stream for periodic synchronization with a peer.
-pub struct RandomPeerSyncTimer<S: Scheduler> {
+pub(crate) struct RandomPeerSyncTimer<S: Scheduler> {
     interval: S::Stream,
 }
 

@@ -51,7 +51,7 @@ impl Ord for Ballot {
 /// within the configuration.
 pub type NodeId = u32;
 
-/// Value type for Paxos.
+/// Command value that the cluster members agree upon to reach consensus.
 ///
 /// TODO: trait aliases!
 pub trait Value
@@ -59,7 +59,7 @@ pub trait Value
     {
 }
 
-/// Command value that the cluster members agree upon to reach consensus.
+/// Paxos `Value` that is an opaque array of bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BytesValue(Rc<[u8]>);
 

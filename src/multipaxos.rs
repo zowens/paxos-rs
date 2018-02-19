@@ -31,27 +31,6 @@ pub type Instance = u64;
 /// `MultiPaxos` is both a `futures::Stream` and `futures::Sink`. It takes in messages
 /// and produces messages for other actors within the system. The algorithm itself
 /// is separated from any networking concerns.
-///
-/// # Example
-///
-/// ```rust
-/// # use paxos::{Register, MultiPaxos, Configuration, UdpServer, proposal_channel, FuturesScheduler};
-/// # use paxos::master::Masterless;
-/// let register = Register::default();
-/// let (proposal_sink, proposal_stream) = proposal_channel();
-/// let config = Configuration::new(
-///     (0u32, "127.0.0.1:4000".parse().unwrap()),
-///     vec![(1, "127.0.0.1:4001".parse().unwrap()),
-///          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
-/// let master_strategy = Masterless::new(config.clone(), FuturesScheduler);
-/// let multipaxos = MultiPaxos::new(
-///     FuturesScheduler,
-///     proposal_stream,
-///     register,
-///     config.clone(),
-///     master_strategy
-/// );
-/// ```
 pub struct MultiPaxos<R: ReplicatedState, M: MasterStrategy, S: Scheduler = FuturesScheduler> {
     state_machine: R,
     state_handler: StateHandler<R::Command>,
@@ -74,17 +53,7 @@ pub struct MultiPaxos<R: ReplicatedState, M: MasterStrategy, S: Scheduler = Futu
 }
 
 impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
-    // TODO: builder
-
-    /// Creates a multi-paxos node.
-    ///
-    /// # Arguments
-    /// * `scheduler` - Custom scheduler used to schedule delayed tasks.
-    /// * `proposal_receiver` - Stream containing proposals for the node
-    /// * `state_machine` - The finite state machine used to apply decided commands.
-    /// * `config` - The initial membership of the cluster in which the node participats.
-    /// * `master_strategy` - The strategy used to implement master or masterless.
-    pub fn new(
+    pub(crate) fn new(
         scheduler: S,
         proposal_receiver: ProposalReceiver<R::Command>,
         mut state_machine: R,
