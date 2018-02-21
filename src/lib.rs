@@ -8,7 +8,12 @@
 //! # Examples
 //!
 //! ```rust,no_run
+//! # extern crate tokio;
+//! # extern crate paxos;
+//! # use tokio::executor;
 //! # use paxos::{MultiPaxosBuilder, Configuration, UdpServer};
+//!
+//! # fn main() {
 //! let config = Configuration::new(
 //!     (0u32, "127.0.0.1:4000".parse().unwrap()),
 //!     vec![(1, "127.0.0.1:4001".parse().unwrap()),
@@ -17,7 +22,10 @@
 //! let (proposal_sink, multipaxos) = MultiPaxosBuilder::new(config.clone()).build();
 //!
 //! let server = UdpServer::new(config).unwrap();
-//! server.run(multipaxos).unwrap();
+//! executor::current_thread::run(move |_| {
+//!     server.spawn(multipaxos);
+//! });
+//! # }
 //! ```
 #[cfg(test)]
 #[macro_use]
