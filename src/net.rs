@@ -2,40 +2,53 @@ use std::net::SocketAddr;
 use std::io;
 use std::fmt;
 use std::marker::PhantomData;
+use bytes::{BufMut, BytesMut};
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_cbor::de;
 use serde_cbor::ser;
-use tokio_core::net::{UdpCodec, UdpSocket};
-use tokio_core::reactor::{Core, Handle};
-use messages::{ClusterMessage, MultiPaxosMessage, NetworkMessage};
+use tokio::net::{UdpFramed, UdpSocket};
+use tokio::executor::current_thread::{spawn, task_executor, TaskExecutor};
+use tokio_io::codec::{Decoder, Encoder};
+use messages::{ClusterMessage, MultiPaxosMessage};
 use config::Configuration;
 
 #[derive(Default)]
 struct MultiPaxosCodec<V: DeserializeOwned + Serialize>(PhantomData<V>);
 
-impl<V: DeserializeOwned + Serialize> UdpCodec for MultiPaxosCodec<V> {
-    type In = Option<NetworkMessage<V>>;
-    type Out = NetworkMessage<V>;
-
-    fn decode(&mut self, addr: &SocketAddr, buf: &[u8]) -> io::Result<Option<NetworkMessage<V>>> {
-        Ok(de::from_slice::<MultiPaxosMessage<V>>(buf)
-            .map_err(|e| error!("Error deserializing message {:?}", e))
-            .map(|m| NetworkMessage {
-                address: *addr,
-                message: m,
-            })
-            .ok())
-    }
-
-    fn encode(&mut self, out: Self::Out, into: &mut Vec<u8>) -> SocketAddr {
-        let NetworkMessage { address, message } = out;
-        if let Err(e) = ser::to_writer_packed(into, &message) {
-            error!("Error serialize message: {}", e);
+impl<V: DeserializeOwned + Serialize> Decoder for MultiPaxosCodec<V> {
+    type Item = MultiPaxosMessage<V>;
+    type Error = io::Error;
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        match de::from_slice::<MultiPaxosMessage<V>>(src) {
+            Ok(msg) => Ok(Some(msg)),
+            Err(e) => {
+                error!("Invalid CBOR data sent: {}", e);
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid CBOR request",
+                ))
+            }
         }
+    }
+}
 
-        address
+impl<V: DeserializeOwned + Serialize> Encoder for MultiPaxosCodec<V> {
+    type Item = MultiPaxosMessage<V>;
+    type Error = io::Error;
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let mut w = dst.writer();
+        match ser::to_writer_packed(&mut w, &item) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                error!("Error serializing message: {}", e);
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Unable to serialize message",
+                ))
+            }
+        }
     }
 }
 
@@ -54,17 +67,17 @@ where
     S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
     S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
 {
-    type SinkItem = NetworkMessage<V>;
+    type SinkItem = (MultiPaxosMessage<V>, SocketAddr);
     type SinkError = io::Error;
 
     fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
-        let NetworkMessage { address, message } = msg;
+        let (message, address) = msg;
         let peer = match self.config.peer_id(&address) {
             Some(v) => v,
             None => {
                 warn!(
                     "Received message from address, but is not in configuration: {}",
-                    msg.address
+                    address
                 );
                 return Ok(AsyncSink::Ready);
             }
@@ -74,7 +87,7 @@ where
         match send_res {
             AsyncSink::Ready => Ok(AsyncSink::Ready),
             AsyncSink::NotReady(ClusterMessage { message, .. }) => {
-                Ok(AsyncSink::NotReady(NetworkMessage { address, message }))
+                Ok(AsyncSink::NotReady((message, address)))
             }
         }
     }
@@ -89,15 +102,15 @@ where
     S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
     S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
 {
-    type Item = NetworkMessage<V>;
+    type Item = (MultiPaxosMessage<V>, SocketAddr);
     type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<NetworkMessage<V>>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         loop {
             match try_ready!(self.s.poll()) {
                 Some(ClusterMessage { peer, message }) => {
                     if let Some(address) = self.config.address(peer) {
-                        return Ok(Async::Ready(Some(NetworkMessage { address, message })));
+                        return Ok(Async::Ready(Some((message, address))));
                     } else {
                         warn!("Unknown peer {:?}", peer);
                     }
@@ -112,7 +125,6 @@ where
 
 /// Server that runs a multi-paxos node over the network with UDP.
 pub struct UdpServer {
-    core: Core,
     socket: UdpSocket,
     config: Configuration,
 }
@@ -121,29 +133,19 @@ impl UdpServer {
     /// Creates a new `UdpServer` with the address of the node
     /// specified in the configuration.
     pub fn new(config: Configuration) -> io::Result<UdpServer> {
-        let core = Core::new()?;
-        let handle = core.handle();
+        let socket = UdpSocket::bind(config.current_address())?;
 
-        let socket = UdpSocket::bind(config.current_address(), &handle)?;
-
-        Ok(UdpServer {
-            core,
-            socket,
-            config,
-        })
+        Ok(UdpServer { socket, config })
     }
 
     /// Gets a handle in order to spawn additional futures other than the multi-paxos
     /// node. For example, a client-facing protocol can be spawned with a handle.
-    pub fn handle(&self) -> Handle {
-        self.core.handle()
+    pub fn executor(&self) -> TaskExecutor {
+        task_executor()
     }
 
     /// Runs a multi-paxos node, blocking until the program is terminated.
-    pub fn run<S: 'static, V: DeserializeOwned + Serialize + 'static>(
-        mut self,
-        multipaxos: S,
-    ) -> Result<(), ()>
+    pub fn spawn<S: 'static, V: DeserializeOwned + Serialize + 'static>(self, multipaxos: S)
     where
         S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
         S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
@@ -155,17 +157,12 @@ impl UdpServer {
         let (sink, stream) = multipaxos.split();
 
         let codec: MultiPaxosCodec<V> = MultiPaxosCodec(PhantomData);
-        let (net_sink, net_stream) = self.socket.framed(codec).split();
-
-        let net_stream = net_stream.filter_map(|v| v);
+        let (net_sink, net_stream) = UdpFramed::new(self.socket, codec).split();
 
         // send replies from upstream to the network
-        self.core
-            .handle()
-            .spawn(EmptyFuture(stream.forward(net_sink)));
-
+        spawn(EmptyFuture(stream.forward(net_sink)));
         // receive messages from network to upstream
-        self.core.run(EmptyFuture(net_stream.forward(sink)))
+        spawn(EmptyFuture(net_stream.forward(sink)));
     }
 }
 

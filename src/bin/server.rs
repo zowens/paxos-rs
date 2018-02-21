@@ -2,7 +2,7 @@
 extern crate env_logger;
 extern crate futures;
 extern crate paxos;
-extern crate tokio_core;
+extern crate tokio;
 extern crate tokio_io;
 
 use std::borrow::Borrow;
@@ -11,8 +11,8 @@ use std::net::SocketAddr;
 use std::net::Ipv4Addr;
 use std::str;
 use futures::{Future, Stream};
-use tokio_core::net::TcpListener;
-use tokio_core::reactor::Handle;
+use tokio::net::TcpListener;
+use tokio::executor::current_thread::{run, spawn};
 use tokio_io::AsyncRead;
 use tokio_io::codec::LinesCodec;
 use paxos::{BytesValue, Configuration, MultiPaxosBuilder, ProposalSender, Register,
@@ -43,13 +43,11 @@ enum Command {
 fn spawn_client_handler(
     register: Register,
     addr: SocketAddr,
-    handle: Handle,
     proposals: ProposalSender<BytesValue>,
 ) {
-    let socket = TcpListener::bind(&addr, &handle).unwrap();
+    let socket = TcpListener::bind(&addr).unwrap();
 
-    let handle_inner = handle.clone();
-    let server = socket.incoming().for_each(move |(socket, _)| {
+    let server = socket.incoming().for_each(move |socket| {
         let register = register.clone();
         let proposals = proposals.clone();
 
@@ -86,12 +84,12 @@ fn spawn_client_handler(
                 }
             })
             .forward(sink);
-        handle_inner.spawn(client_future.map(|_| ()).map_err(|_| ()));
+        spawn(client_future.map(|_| ()).map_err(|_| ()));
 
         Ok(())
     });
 
-    handle.spawn(server.map_err(|_| ()));
+    spawn(server.map_err(|_| ()));
 }
 
 pub fn main() {
@@ -108,6 +106,8 @@ pub fn main() {
     let server = UdpServer::new(config.clone()).unwrap();
 
     let (proposal_sink, multi_paxos) = MultiPaxosBuilder::new(config).build();
-    spawn_client_handler(register, client_addr, server.handle(), proposal_sink);
-    server.run(multi_paxos).unwrap();
+    run(move |_| {
+        spawn_client_handler(register, client_addr, proposal_sink);
+        server.spawn(multi_paxos);
+    });
 }

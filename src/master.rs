@@ -5,7 +5,7 @@ use timer::{InstanceResolutionTimer, Scheduler};
 use super::Instance;
 use paxos::{Ballot, PaxosInstance};
 use value::Value;
-use config::{NodeId, Configuration};
+use config::{Configuration, NodeId};
 
 // TODO: rename this
 

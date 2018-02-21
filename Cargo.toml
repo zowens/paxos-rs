@@ -6,7 +6,7 @@ version = "0.1.0"
 [dependencies]
 log = "0.4"
 rand = "0.4"
-tokio-core = "0.1.11"
+tokio = "0.1"
 futures = "0.1.17"
 env_logger = "0.4.3"
 futures-timer = { git = "https://github.com/alexcrichton/futures-timer.git" }
@@ -16,6 +16,7 @@ tokio-io = "0.1.4"
 serde_derive = "1.0.26"
 serde_cbor = "0.8.1"
 serde = "1.0.26"
+bytes = "0.4.6"
 
 [dev-dependencies]
 assert_matches = "1.1.0"

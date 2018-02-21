@@ -1,14 +1,13 @@
 extern crate clap;
 extern crate env_logger;
 extern crate futures;
-extern crate tokio_core;
+extern crate tokio;
 extern crate tokio_io;
 
 use std::net::SocketAddr;
 use clap::{App, Arg, SubCommand};
 use futures::{Future, Sink, Stream};
-use tokio_core::reactor::Core;
-use tokio_core::net::TcpStream;
+use tokio::net::TcpStream;
 use tokio_io::codec::LinesCodec;
 use tokio_io::AsyncRead;
 
@@ -33,13 +32,10 @@ fn main() {
         .subcommand(SubCommand::with_name("get").about("gets the current value"))
         .get_matches();
 
-    let mut core = Core::new().unwrap();
-    let handle = core.handle();
     let addr: SocketAddr = format!("127.0.0.1:400{}", matches.value_of("node").unwrap_or("0"))
         .parse()
         .unwrap();
-    let connect =
-        TcpStream::connect(&addr, &handle).map(|conn| conn.framed(LinesCodec::new()).split());
+    let connect = TcpStream::connect(&addr).map(|conn| conn.framed(LinesCodec::new()).split());
 
     match matches.subcommand() {
         ("propose", Some(args)) => {
@@ -49,7 +45,7 @@ fn main() {
                 .and_then(move |(sink, _)| sink.send(msg))
                 .map(|_| ())
                 .map_err(|e| println!("ERROR: {}", e));
-            core.run(req_future).unwrap()
+            req_future.wait().unwrap()
         }
         ("get", Some(_args)) => {
             let req_future = connect
@@ -62,7 +58,7 @@ fn main() {
                     })
                 })
                 .map_err(|e| println!("ERROR: {}", e));
-            core.run(req_future).unwrap()
+            req_future.wait().unwrap()
         }
         _ => panic!("UNKNOWN COMMAND"),
     };

@@ -22,6 +22,7 @@
 #[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
+extern crate bytes;
 extern crate either;
 #[macro_use]
 extern crate futures;
@@ -35,7 +36,8 @@ extern crate serde_cbor;
 extern crate serde_derive;
 #[cfg(test)]
 extern crate test;
-extern crate tokio_core;
+extern crate tokio;
+extern crate tokio_io;
 
 pub mod paxos;
 mod state;
@@ -55,7 +57,7 @@ pub use net::UdpServer;
 pub use register::Register;
 pub use config::Configuration;
 pub use proposals::ProposalSender;
-pub use value::{Value, BytesValue};
+pub use value::{BytesValue, Value};
 use timer::{FuturesScheduler, Scheduler};
 use master::{DistinguishedProposer, MasterStrategy, Masterless};
 use multipaxos::MultiPaxos;

@@ -1,6 +1,4 @@
 //! Messages sent within the cluster of nodes.
-use std::net::SocketAddr;
-
 use config::NodeId;
 use super::Instance;
 use paxos::{Accept, Accepted, Prepare, Promise, Reject};
@@ -42,14 +40,6 @@ pub enum MultiPaxosMessage<V> {
 
     /// Redirects a proposal from one node to the Distinguished Proposer
     RedirectProposal(V),
-}
-
-/// Message sent over the network.
-pub struct NetworkMessage<V> {
-    /// Address of the receiptient or destination of the message
-    pub address: SocketAddr,
-    /// The message
-    pub message: MultiPaxosMessage<V>,
 }
 
 /// Message sent to a peer node in the cluster.
