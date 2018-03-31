@@ -1,4 +1,4 @@
-#![feature(ip_constructors, conservative_impl_trait)]
+#![feature(ip_constructors)]
 extern crate env_logger;
 extern crate futures;
 extern crate paxos;

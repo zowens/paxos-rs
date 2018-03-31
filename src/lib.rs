@@ -10,7 +10,6 @@
 //! ```rust,no_run
 //! # extern crate tokio;
 //! # extern crate paxos;
-//! # use tokio::executor;
 //! # use paxos::{MultiPaxosBuilder, Configuration, UdpServer};
 //!
 //! # fn main() {
@@ -22,9 +21,7 @@
 //! let (proposal_sink, multipaxos) = MultiPaxosBuilder::new(config.clone()).build();
 //!
 //! let server = UdpServer::new(config).unwrap();
-//! executor::current_thread::run(move |_| {
-//!     server.spawn(multipaxos);
-//! });
+//! server.run(multipaxos);
 //! # }
 //! ```
 #[cfg(test)]
