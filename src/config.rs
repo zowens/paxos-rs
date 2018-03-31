@@ -2,25 +2,20 @@ use std::collections::HashMap;
 use std::collections::hash_map;
 use std::fmt;
 use std::net::SocketAddr;
-use std::rc::Rc;
-use std::cell::{Ref, RefCell};
 use rand::{weak_rng, Rng, XorShiftRng};
 
 /// A `NodeId` is a unique value that identifies a node
 /// within the configuration.
 pub type NodeId = u32;
 
-struct Inner {
-    peers: HashMap<NodeId, SocketAddr>,
-    socket_to_peer: HashMap<SocketAddr, NodeId>,
-    rand: XorShiftRng,
-}
-
 /// Configuration holds the state of the membership of the cluster.
+/// TODO: add reconfiguration
 #[derive(Clone)]
 pub struct Configuration {
     current: (NodeId, SocketAddr),
-    inner: Rc<RefCell<Inner>>,
+    peers: HashMap<NodeId, SocketAddr>,
+    socket_to_peer: HashMap<SocketAddr, NodeId>,
+    rand: XorShiftRng,
 }
 
 impl Configuration {
@@ -34,17 +29,15 @@ impl Configuration {
             peers.iter().map(|e| (*e.1, *e.0)).collect();
         Configuration {
             current,
-            inner: Rc::new(RefCell::new(Inner {
-                peers,
-                socket_to_peer,
-                rand: weak_rng(),
-            })),
+            peers,
+            socket_to_peer,
+            rand: weak_rng(),
         }
     }
 
     /// Size of quorum
     pub fn quorum_size(&self) -> usize {
-        1 + (self.inner.borrow().peers.len() / 2)
+        1 + (self.peers.len() / 2)
     }
 
     /// Current node identifier
@@ -59,30 +52,14 @@ impl Configuration {
 
     /// Iterator containing `NodeId` values of peers
     pub fn peers(&self) -> PeerIntoIter {
-        PeerIntoIter {
-            r: self.inner.borrow(),
-        }
-    }
-
-    /// Sets the membership of peers. This allows for reconfiguration.
-    pub fn set_peers<I>(&self, peers: I)
-    where
-        I: Iterator<Item = (NodeId, SocketAddr)>,
-    {
-        let peers: HashMap<NodeId, SocketAddr> = peers.collect();
-        let socket_to_peer: HashMap<SocketAddr, NodeId> =
-            peers.iter().map(|e| (*e.1, *e.0)).collect();
-
-        let mut v = self.inner.borrow_mut();
-        v.peers = peers;
-        v.socket_to_peer = socket_to_peer;
+        PeerIntoIter { r: &self }
     }
 
     /// Randomly selects a peer to transmit messages.
     pub fn random_peer(&mut self) -> Option<NodeId> {
-        let len = self.inner.borrow().peers.len();
-        let n = self.inner.borrow_mut().rand.gen_range(0, len);
-        self.inner.borrow().peers.keys().nth(n).cloned()
+        let len = self.peers.len();
+        let n = self.rand.gen_range(0, len);
+        self.peers.keys().nth(n).cloned()
     }
 
     /// Gets the address of a node.
@@ -90,7 +67,7 @@ impl Configuration {
         if node == self.current.0 {
             Some(self.current.1)
         } else {
-            self.inner.borrow().peers.get(&node).cloned()
+            self.peers.get(&node).cloned()
         }
     }
 
@@ -99,20 +76,19 @@ impl Configuration {
         if address == &self.current.1 {
             Some(self.current.0)
         } else {
-            self.inner.borrow().socket_to_peer.get(address).cloned()
+            self.socket_to_peer.get(address).cloned()
         }
     }
 }
 
 impl fmt::Debug for Configuration {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let inner = self.inner.borrow();
         let quorum_size = self.quorum_size();
         fmt.debug_struct("Configuration")
             .field("current_node_id", &self.current.0)
             .field("current_node_address", &self.current.1)
-            .field("peers", &inner.peers)
-            .field("peers_to_socket", &inner.socket_to_peer)
+            .field("peers", &self.peers)
+            .field("peers_to_socket", &self.socket_to_peer)
             .field("quorum", &quorum_size)
             .finish()
     }
@@ -120,7 +96,7 @@ impl fmt::Debug for Configuration {
 
 /// `IntoIterator` for peer node identifiers
 pub struct PeerIntoIter<'a> {
-    r: Ref<'a, Inner>,
+    r: &'a Configuration,
 }
 
 impl<'a, 'b: 'a> IntoIterator for &'b PeerIntoIter<'a> {

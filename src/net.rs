@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_cbor::de;
 use serde_cbor::ser;
 use tokio::net::{UdpFramed, UdpSocket};
-use tokio::executor::current_thread::{spawn, task_executor, TaskExecutor};
+use tokio::runtime::Runtime;
 use tokio_io::codec::{Decoder, Encoder};
 use messages::{ClusterMessage, MultiPaxosMessage};
 use config::Configuration;
@@ -127,26 +127,34 @@ where
 pub struct UdpServer {
     socket: UdpSocket,
     config: Configuration,
+    runtime: Runtime,
 }
 
 impl UdpServer {
     /// Creates a new `UdpServer` with the address of the node
     /// specified in the configuration.
     pub fn new(config: Configuration) -> io::Result<UdpServer> {
+        let runtime = Runtime::new()?;
         let socket = UdpSocket::bind(config.current_address())?;
 
-        Ok(UdpServer { socket, config })
+        Ok(UdpServer {
+            socket,
+            config,
+            runtime,
+        })
     }
 
     /// Gets a handle in order to spawn additional futures other than the multi-paxos
     /// node. For example, a client-facing protocol can be spawned with a handle.
-    pub fn executor(&self) -> TaskExecutor {
-        task_executor()
+    pub fn runtime_mut(&mut self) -> &mut Runtime {
+        &mut self.runtime
     }
 
     /// Runs a multi-paxos node, blocking until the program is terminated.
-    pub fn spawn<S: 'static, V: DeserializeOwned + Serialize + 'static>(self, multipaxos: S)
-    where
+    pub fn run<S: Send + 'static, V: Send + DeserializeOwned + Serialize + 'static>(
+        mut self,
+        multipaxos: S,
+    ) where
         S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
         S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
     {
@@ -160,9 +168,11 @@ impl UdpServer {
         let (net_sink, net_stream) = UdpFramed::new(self.socket, codec).split();
 
         // send replies from upstream to the network
-        spawn(EmptyFuture(stream.forward(net_sink)));
+        self.runtime.spawn(EmptyFuture(stream.forward(net_sink)));
         // receive messages from network to upstream
-        spawn(EmptyFuture(net_stream.forward(sink)));
+        self.runtime.spawn(EmptyFuture(net_stream.forward(sink)));
+
+        self.runtime.shutdown_on_idle().wait().unwrap();
     }
 }
 

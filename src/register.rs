@@ -1,5 +1,4 @@
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, RwLock};
 use super::Instance;
 use statemachine::ReplicatedState;
 use value::BytesValue;
@@ -7,13 +6,13 @@ use value::BytesValue;
 /// Replicated mutable value register
 #[derive(Clone)]
 pub struct Register {
-    value: Rc<RefCell<Option<BytesValue>>>,
+    value: Arc<RwLock<Option<BytesValue>>>,
 }
 
-impl Default for Register {
-    fn default() -> Register {
+impl Register {
+    pub fn new() -> Register {
         Register {
-            value: Rc::new(RefCell::new(None)),
+            value: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -28,11 +27,12 @@ impl ReplicatedState for Register {
             instance, value
         );
 
-        let mut v = self.value.borrow_mut();
-        *v = Some(value);
+        let mut val = self.value.write().unwrap();
+        *val = Some(value);
     }
 
     fn snapshot(&self, _instance: Instance) -> Option<BytesValue> {
-        self.value.borrow().clone()
+        let val = self.value.read().unwrap();
+        val.clone()
     }
 }

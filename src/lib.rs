@@ -34,7 +34,7 @@ extern crate bytes;
 extern crate either;
 #[macro_use]
 extern crate futures;
-extern crate futures_timer;
+extern crate tokio_timer;
 #[macro_use]
 extern crate log;
 extern crate rand;
@@ -94,7 +94,7 @@ impl MultiPaxosBuilder<Register, DistinguishedProposer<FuturesScheduler>, Future
     {
         let master_strategy = DistinguishedProposer::new(config.clone(), FuturesScheduler);
         MultiPaxosBuilder {
-            state_machine: Register::default(),
+            state_machine: Register::new(),
             config,
             master_strategy,
             scheduler: FuturesScheduler,

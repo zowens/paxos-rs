@@ -2,10 +2,11 @@
 use std::cmp::min;
 use std::io;
 use std::mem;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use futures::{Async, Poll, Stream};
+use futures::stream::{Map, MapErr};
 use futures::task;
-use futures_timer::Interval;
+use tokio_timer::{self, Interval};
 use super::Instance;
 use rand::{thread_rng, Rng};
 
@@ -32,10 +33,21 @@ pub trait Scheduler: Clone {
 pub struct FuturesScheduler;
 
 impl Scheduler for FuturesScheduler {
-    type Stream = Interval;
+    type Stream = Map<MapErr<Interval, fn(tokio_timer::Error) -> io::Error>, fn(Instant) -> ()>;
 
-    fn interval(&mut self, delay: Duration) -> Interval {
-        Interval::new(delay)
+    fn interval(&mut self, delay: Duration) -> Self::Stream {
+        fn map_tokio_err(e: tokio_timer::Error) -> io::Error {
+            error!("Error with timer: {}", e);
+            io::Error::new(io::ErrorKind::Other, "Timer error")
+        }
+
+        fn map_tokio_item(_: Instant) -> () {
+            ()
+        }
+
+        let x: MapErr<Interval, fn(tokio_timer::Error) -> io::Error> =
+            Interval::new(Instant::now() + delay, delay).map_err(map_tokio_err);
+        x.map(map_tokio_item)
     }
 }
 

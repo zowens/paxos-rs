@@ -1,33 +1,33 @@
 use std::fmt;
-use std::rc::Rc;
 use std::ops::Deref;
 use serde::de;
 use serde::ser;
 use serde;
+use bytes::Bytes;
 
 /// Command value that the cluster members agree upon to reach consensus.
 ///
 /// TODO: trait aliases!
-pub trait Value
-    : ser::Serialize + de::DeserializeOwned + PartialEq + Eq + Clone + fmt::Debug
-    {
+pub trait Value:
+    ser::Serialize + de::DeserializeOwned + PartialEq + Eq + Clone + fmt::Debug + Send
+{
 }
 
 /// Paxos `Value` that is an opaque array of bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BytesValue(Rc<[u8]>);
+pub struct BytesValue(pub Bytes);
 
 impl Value for BytesValue {}
 
 impl From<Vec<u8>> for BytesValue {
     fn from(vec: Vec<u8>) -> BytesValue {
-        BytesValue(vec.into_boxed_slice().into())
+        BytesValue(vec.into())
     }
 }
 
 impl From<String> for BytesValue {
     fn from(s: String) -> BytesValue {
-        BytesValue(s.into_boxed_str().into_boxed_bytes().into())
+        BytesValue(s.into())
     }
 }
 

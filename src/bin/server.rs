@@ -1,4 +1,4 @@
-#![feature(ip_constructors)]
+#![feature(ip_constructors, conservative_impl_trait)]
 extern crate env_logger;
 extern crate futures;
 extern crate paxos;
@@ -12,7 +12,6 @@ use std::net::Ipv4Addr;
 use std::str;
 use futures::{Future, Stream};
 use tokio::net::TcpListener;
-use tokio::executor::current_thread::{run, spawn};
 use tokio_io::AsyncRead;
 use tokio_io::codec::LinesCodec;
 use paxos::{BytesValue, Configuration, MultiPaxosBuilder, ProposalSender, Register,
@@ -40,11 +39,11 @@ enum Command {
 /// Examples:
 /// * `get`
 /// * `propose hello world`
-fn spawn_client_handler(
+fn client_handler(
     register: Register,
     addr: SocketAddr,
     proposals: ProposalSender<BytesValue>,
-) {
+) -> impl Future<Item = (), Error = ()> {
     let socket = TcpListener::bind(&addr).unwrap();
 
     let server = socket.incoming().for_each(move |socket| {
@@ -84,12 +83,10 @@ fn spawn_client_handler(
                 }
             })
             .forward(sink);
-        spawn(client_future.map(|_| ()).map_err(|_| ()));
-
-        Ok(())
+        client_future.map(|_| ())
     });
 
-    spawn(server.map_err(|_| ()));
+    server.map_err(|_| ())
 }
 
 pub fn main() {
@@ -102,12 +99,14 @@ pub fn main() {
 
     println!("{:?}", config);
 
-    let register = Register::default();
-    let server = UdpServer::new(config.clone()).unwrap();
+    let register = Register::new();
+    let mut server = UdpServer::new(config.clone()).unwrap();
 
-    let (proposal_sink, multi_paxos) = MultiPaxosBuilder::new(config).build();
-    run(move |_| {
-        spawn_client_handler(register, client_addr, proposal_sink);
-        server.spawn(multi_paxos);
-    });
+    let (proposal_sink, multi_paxos) = MultiPaxosBuilder::new(config)
+        .with_state_machine(register.clone())
+        .build();
+    server
+        .runtime_mut()
+        .spawn(client_handler(register, client_addr, proposal_sink));
+    server.run(multi_paxos);
 }
