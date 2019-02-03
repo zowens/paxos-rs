@@ -1,7 +1,7 @@
-use std::marker::PhantomData;
-use paxos::Ballot;
-use value::Value;
 use super::Instance;
+use paxos::Ballot;
+use std::marker::PhantomData;
+use value::Value;
 
 pub struct State<V: Value> {
     pub instance: Instance,

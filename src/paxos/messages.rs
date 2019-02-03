@@ -1,5 +1,5 @@
-use either::Either;
 use super::{Ballot, NodeId};
+use either::Either;
 
 /// `PREPARE` message is the Phase 1a message from a proposer sent
 /// to acceptors to receive agreement to not accept ballots of lower value.

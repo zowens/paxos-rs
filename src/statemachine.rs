@@ -1,5 +1,5 @@
-use value::Value;
 use super::Instance;
+use value::Value;
 
 /// `ReplicatedState` is a state machine that applies value synchronously. The
 /// value is replicated with `MultiPaxos`.

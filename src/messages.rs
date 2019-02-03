@@ -1,6 +1,6 @@
 //! Messages sent within the cluster of nodes.
-use config::NodeId;
 use super::Instance;
+use config::NodeId;
 use paxos::{Accept, Accepted, Prepare, Promise, Reject};
 
 // TODO: convert MultiPaxosMessage to struct-enum

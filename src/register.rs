@@ -1,6 +1,6 @@
-use std::sync::{Arc, RwLock};
 use super::Instance;
 use statemachine::ReplicatedState;
+use std::sync::{Arc, RwLock};
 use value::BytesValue;
 
 /// Replicated mutable value register

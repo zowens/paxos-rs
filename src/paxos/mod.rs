@@ -1,10 +1,10 @@
-mod messages;
 mod instance;
+mod messages;
 
-use std::cmp::Ordering;
-use config::NodeId;
 pub use self::instance::PaxosInstance;
 pub use self::messages::*;
+use config::NodeId;
+use std::cmp::Ordering;
 
 /// Ballot numbering is an increasing number in order to order proposals
 /// across multiple nodes. Ballots are unique in that ballot numbers between

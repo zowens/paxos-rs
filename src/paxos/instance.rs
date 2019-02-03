@@ -1,10 +1,10 @@
+use super::messages::*;
+use super::*;
+use config::NodeId;
+use either::Either;
 use std::collections::HashMap;
 use std::mem;
-use either::Either;
-use config::NodeId;
 use value::Value;
-use super::*;
-use super::messages::*;
 
 /// Encoding of the Proposer role's state machine
 #[derive(Debug)]
@@ -83,7 +83,8 @@ impl<V: Value> Proposer<V> {
 
     /// Prepare sets state to candidate and begins to track promises.
     fn prepare(&mut self, value: Option<V>) -> Prepare {
-        let new_ballot = self.highest
+        let new_ballot = self
+            .highest
             .map(|m| m.higher_for(self.current))
             .unwrap_or_else(|| Ballot(0, self.current));
 
@@ -131,8 +132,7 @@ impl<V: Value> Proposer<V> {
                 ref mut value,
                 proposal,
                 ..
-            } if value.is_none() =>
-            {
+            } if value.is_none() => {
                 *value = Some(v.clone());
                 Some(Either::Right(Accept(proposal, v)))
             }
@@ -160,8 +160,7 @@ impl<V: Value> Proposer<V> {
                 ref mut promise_rejections,
                 proposal,
                 ..
-            } if proposal == proposed =>
-            {
+            } if proposal == proposed => {
                 promise_rejections.insert(peer);
                 promise_rejections.has_quorum()
             }
@@ -169,8 +168,7 @@ impl<V: Value> Proposer<V> {
                 ref mut rejections,
                 proposal,
                 ..
-            } if proposal == proposed =>
-            {
+            } if proposal == proposed => {
                 rejections.insert(peer);
                 rejections.has_quorum()
             }
@@ -642,7 +640,8 @@ impl<V: Value> PaxosInstance<V> {
             Either::Left(accepted) => {
                 // track self as accepting in the learner state machine
                 // (without propagating the message to the network)
-                let resolution = self.learner
+                let resolution = self
+                    .learner
                     .receive_accepted(self.proposer.current, accepted.clone());
                 debug_assert!(
                     resolution.is_none(),

@@ -1,26 +1,27 @@
-#![feature(ip_constructors)]
 extern crate env_logger;
 extern crate futures;
 extern crate paxos;
 extern crate tokio;
+extern crate tokio_codec;
 extern crate tokio_io;
 
+use futures::{Future, Stream};
+use paxos::{
+    BytesValue, Configuration, MultiPaxosBuilder, ProposalSender, Register, ReplicatedState,
+    UdpServer,
+};
 use std::borrow::Borrow;
 use std::env::args;
-use std::net::SocketAddr;
 use std::net::Ipv4Addr;
+use std::net::SocketAddr;
 use std::str;
-use futures::{Future, Stream};
 use tokio::net::TcpListener;
-use tokio_io::AsyncRead;
-use tokio_io::codec::LinesCodec;
-use paxos::{BytesValue, Configuration, MultiPaxosBuilder, ProposalSender, Register,
-            ReplicatedState, UdpServer};
+use tokio_codec::{Decoder, LinesCodec};
 
 fn local_config(node: u16) -> (Configuration, SocketAddr) {
     assert!(node < 3);
 
-    let ip = Ipv4Addr::localhost().into();
+    let ip = Ipv4Addr::LOCALHOST.into();
     let current = (node as u32, SocketAddr::new(ip, 3000 + node));
     let client_addr = SocketAddr::new(ip, 4000 + node);
     let others = (0..3u16)
@@ -50,7 +51,7 @@ fn client_handler(
         let register = register.clone();
         let proposals = proposals.clone();
 
-        let (sink, stream) = socket.framed(LinesCodec::new()).split();
+        let (sink, stream) = LinesCodec::new().framed(socket).split();
         let client_future = stream
             .map(move |mut req| {
                 let proposals = proposals.clone();

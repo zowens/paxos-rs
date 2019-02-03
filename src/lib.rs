@@ -1,4 +1,4 @@
-#![feature(test, option_filter)]
+#![feature(test)]
 #![allow(unknown_lints)]
 //! Rust implementation of the Paxos algorithm for replicated state machines.
 //!
@@ -42,30 +42,31 @@ extern crate serde_derive;
 #[cfg(test)]
 extern crate test;
 extern crate tokio;
+extern crate tokio_codec;
 extern crate tokio_io;
 
-pub mod paxos;
-mod state;
-mod statemachine;
+pub mod config;
 mod master;
 pub mod messages;
 pub mod multipaxos;
 mod net;
-mod register;
-pub mod config;
-pub mod timer;
+pub mod paxos;
 mod proposals;
+mod register;
+mod state;
+mod statemachine;
+pub mod timer;
 mod value;
 
-pub use statemachine::ReplicatedState;
-pub use net::UdpServer;
-pub use register::Register;
 pub use config::Configuration;
-pub use proposals::ProposalSender;
-pub use value::{BytesValue, Value};
-use timer::{FuturesScheduler, Scheduler};
 use master::{DistinguishedProposer, MasterStrategy, Masterless};
 use multipaxos::MultiPaxos;
+pub use net::UdpServer;
+pub use proposals::ProposalSender;
+pub use register::Register;
+pub use statemachine::ReplicatedState;
+use timer::{FuturesScheduler, Scheduler};
+pub use value::{BytesValue, Value};
 
 /// An instance is a _round_ of the Paxos algorithm. Instances are chained to
 /// form a sequence of values. Once an instance receives consensus, the next

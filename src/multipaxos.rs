@@ -1,17 +1,17 @@
-use std::collections::VecDeque;
-use std::io;
+use super::Instance;
+use config::*;
+use either::Either;
 use futures::task;
 use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
-use either::Either;
+use master::*;
 use messages::*;
 use paxos::*;
+use proposals::*;
 use state::*;
 use statemachine::*;
-use config::*;
+use std::collections::VecDeque;
+use std::io;
 use timer::*;
-use proposals::*;
-use master::*;
-use super::Instance;
 
 /// `MultiPaxos` receives messages and attempts to receive consensus on a replicated
 /// value. Multiple instances of the paxos algorithm are chained together.
@@ -484,15 +484,15 @@ impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Stream for MultiPaxos<
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::collections::HashSet;
-    use std::time::Duration;
-    use std::rc::Rc;
+    use super::*;
     use futures::executor::{spawn, Notify, NotifyHandle};
     use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
     use proposals::*;
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+    use std::rc::Rc;
+    use std::time::Duration;
     use value::*;
-    use super::*;
 
     #[test]
     fn catchup() {
@@ -501,7 +501,8 @@ mod tests {
             vec![
                 (1, "127.0.0.1:4001".parse().unwrap()),
                 (2, "127.0.0.1:4002".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
 
         let (_, stream) = proposal_channel();
@@ -549,7 +550,8 @@ mod tests {
             vec![
                 (1, "127.0.0.1:4001".parse().unwrap()),
                 (2, "127.0.0.1:4002".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
 
         let (_, stream) = proposal_channel();
@@ -609,7 +611,8 @@ mod tests {
             vec![
                 (1, "127.0.0.1:4001".parse().unwrap()),
                 (2, "127.0.0.1:4002".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
 
         let (sink, stream) = proposal_channel();
@@ -648,7 +651,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(3, config.quorum_size());
 
@@ -755,7 +759,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
 
         let (sink, stream) = proposal_channel();
@@ -835,7 +840,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
 
         let (sink, stream) = proposal_channel();
@@ -922,7 +928,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(3, config.quorum_size());
 
@@ -1017,7 +1024,8 @@ mod tests {
             vec![
                 (1, "127.0.0.1:4001".parse().unwrap()),
                 (2, "127.0.0.1:4002".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(2, config.quorum_size());
 
@@ -1095,7 +1103,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(3, config.quorum_size());
 
@@ -1191,7 +1200,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(3, config.quorum_size());
 
@@ -1251,7 +1261,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(3, config.quorum_size());
 
@@ -1312,7 +1323,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(3, config.quorum_size());
 
@@ -1352,7 +1364,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4004".parse().unwrap()),
                 (4, "127.0.0.1:4005".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(3, config.quorum_size());
 
@@ -1407,7 +1420,8 @@ mod tests {
             vec![
                 (1, "127.0.0.1:4001".parse().unwrap()),
                 (2, "127.0.0.1:4002".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(2, config.quorum_size());
 
@@ -1477,7 +1491,8 @@ mod tests {
             vec![
                 (1, "127.0.0.1:4001".parse().unwrap()),
                 (2, "127.0.0.1:4002".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(2, config.quorum_size());
 
@@ -1564,7 +1579,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4003".parse().unwrap()),
                 (4, "127.0.0.1:4004".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
         assert_eq!(3, config.quorum_size());
 
@@ -1578,13 +1594,11 @@ mod tests {
             Masterless::new(config.clone(), scheduler.clone()),
         );
 
-        assert!(
-            multi_paxos
-                .master_strategy
-                .prepare_timer()
-                .stream()
-                .is_none()
-        );
+        assert!(multi_paxos
+            .master_strategy
+            .prepare_timer()
+            .stream()
+            .is_none());
 
         multi_paxos
             .start_send(ClusterMessage {
@@ -1601,13 +1615,11 @@ mod tests {
         assert_eq!(4, msgs.len());
 
         // start with a new ballot
-        assert!(
-            multi_paxos
-                .master_strategy
-                .prepare_timer()
-                .stream()
-                .is_some()
-        );
+        assert!(multi_paxos
+            .master_strategy
+            .prepare_timer()
+            .stream()
+            .is_some());
         let stream_index = multi_paxos
             .master_strategy
             .prepare_timer()
@@ -1694,7 +1706,8 @@ mod tests {
                 (2, "127.0.0.1:4002".parse().unwrap()),
                 (3, "127.0.0.1:4003".parse().unwrap()),
                 (4, "127.0.0.1:4004".parse().unwrap()),
-            ].into_iter(),
+            ]
+            .into_iter(),
         );
 
         assert_eq!(3, config.quorum_size());

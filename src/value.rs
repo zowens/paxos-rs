@@ -1,9 +1,9 @@
-use std::fmt;
-use std::ops::Deref;
+use bytes::Bytes;
+use serde;
 use serde::de;
 use serde::ser;
-use serde;
-use bytes::Bytes;
+use std::fmt;
+use std::ops::Deref;
 
 /// Command value that the cluster members agree upon to reach consensus.
 ///

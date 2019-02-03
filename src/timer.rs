@@ -1,14 +1,14 @@
 //! Timing abstractions that implement types from the `futures` crate.
+use super::Instance;
+use futures::stream::{Map, MapErr};
+use futures::task;
+use futures::{Async, Poll, Stream};
+use rand::{thread_rng, Rng};
 use std::cmp::min;
 use std::io;
 use std::mem;
 use std::time::{Duration, Instant};
-use futures::{Async, Poll, Stream};
-use futures::stream::{Map, MapErr};
-use futures::task;
 use tokio_timer::{self, Interval};
-use super::Instance;
-use rand::{thread_rng, Rng};
 
 /// Starting timeout for restarting Phase 1
 const RESOLUTION_STARTING_MS: u64 = 5;

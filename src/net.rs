@@ -1,18 +1,18 @@
-use std::net::SocketAddr;
-use std::io;
-use std::fmt;
-use std::marker::PhantomData;
 use bytes::{BufMut, BytesMut};
+use config::Configuration;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use messages::{ClusterMessage, MultiPaxosMessage};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_cbor::de;
 use serde_cbor::ser;
+use std::fmt;
+use std::io;
+use std::marker::PhantomData;
+use std::net::SocketAddr;
 use tokio::net::{UdpFramed, UdpSocket};
 use tokio::runtime::Runtime;
 use tokio_io::codec::{Decoder, Encoder};
-use messages::{ClusterMessage, MultiPaxosMessage};
-use config::Configuration;
 
 #[derive(Default)]
 struct MultiPaxosCodec<V: DeserializeOwned + Serialize>(PhantomData<V>);

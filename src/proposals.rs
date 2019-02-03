@@ -1,6 +1,6 @@
-use std::io;
-use futures::{Poll, Sink, StartSend, Stream};
 use futures::sync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
+use futures::{Poll, Sink, StartSend, Stream};
+use std::io;
 use value::Value;
 
 /// Creates a sink and stream pair for proposals.

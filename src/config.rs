@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use rand::{weak_rng, Rng, XorShiftRng};
 use std::collections::hash_map;
+use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
-use rand::{weak_rng, Rng, XorShiftRng};
 
 /// A `NodeId` is a unique value that identifies a node
 /// within the configuration.

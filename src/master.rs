@@ -1,11 +1,11 @@
+use super::Instance;
+use config::{Configuration, NodeId};
+use futures::{Async, Poll, Stream};
+use paxos::{Ballot, PaxosInstance};
 use std::io;
 use std::time::Duration;
-use futures::{Async, Poll, Stream};
 use timer::{InstanceResolutionTimer, Scheduler};
-use super::Instance;
-use paxos::{Ballot, PaxosInstance};
 use value::Value;
-use config::{Configuration, NodeId};
 
 // TODO: rename this
 

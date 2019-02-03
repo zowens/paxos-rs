@@ -2,14 +2,14 @@ extern crate clap;
 extern crate env_logger;
 extern crate futures;
 extern crate tokio;
+extern crate tokio_codec;
 extern crate tokio_io;
 
-use std::net::SocketAddr;
 use clap::{App, Arg, SubCommand};
 use futures::{Future, Sink, Stream};
+use std::net::SocketAddr;
 use tokio::net::TcpStream;
-use tokio_io::codec::LinesCodec;
-use tokio_io::AsyncRead;
+use tokio_codec::{Decoder, LinesCodec};
 
 fn main() {
     env_logger::init().unwrap();
@@ -35,7 +35,7 @@ fn main() {
     let addr: SocketAddr = format!("127.0.0.1:400{}", matches.value_of("node").unwrap_or("0"))
         .parse()
         .unwrap();
-    let connect = TcpStream::connect(&addr).map(|conn| conn.framed(LinesCodec::new()).split());
+    let connect = TcpStream::connect(&addr).map(|conn| LinesCodec::new().framed(conn).split());
 
     match matches.subcommand() {
         ("propose", Some(args)) => {
