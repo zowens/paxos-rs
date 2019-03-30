@@ -1,4 +1,5 @@
-use rand::{weak_rng, Rng, XorShiftRng};
+use rand::{thread_rng, Rng, SeedableRng};
+use rand_xorshift::XorShiftRng;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::fmt;
@@ -31,7 +32,7 @@ impl Configuration {
             current,
             peers,
             socket_to_peer,
-            rand: weak_rng(),
+            rand: XorShiftRng::from_rng(thread_rng()).unwrap(),
         }
     }
 

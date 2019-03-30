@@ -91,7 +91,7 @@ fn client_handler(
 }
 
 pub fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
 
     let (config, client_addr) = match args().nth(1) {
         Some(v) => local_config(v.parse::<u16>().unwrap()),

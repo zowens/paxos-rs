@@ -35,6 +35,7 @@ extern crate tokio_timer;
 #[macro_use]
 extern crate log;
 extern crate rand;
+extern crate rand_xorshift;
 extern crate serde;
 extern crate serde_cbor;
 #[macro_use]

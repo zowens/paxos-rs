@@ -12,7 +12,7 @@ use tokio::net::TcpStream;
 use tokio_codec::{Decoder, LinesCodec};
 
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init();
 
     let matches = App::new("paxos client")
         .version("0.1")
