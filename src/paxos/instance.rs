@@ -430,7 +430,7 @@ impl<V: Value> Learner<V> {
                         }
                     }
                     // new ACCEPTED from this acceptor
-                    Vacant(mut e) => {
+                    Vacant(e) => {
                         e.insert(proposal);
                     }
                 }
@@ -438,7 +438,7 @@ impl<V: Value> Learner<V> {
                 // insert the ACCEPTED as part of the ballot
                 debug!("Accepted {:?} for peer={}", proposal, peer);
                 let quorum = self.quorum;
-                let mut proposal_status =
+                let proposal_status =
                     proposals.entry(proposal).or_insert_with(|| ProposalStatus {
                         acceptors: QuorumSet::with_size(quorum),
                         value: value.clone(),
