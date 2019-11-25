@@ -6,7 +6,7 @@ version = "0.1.0"
 [dependencies]
 log = "0.4"
 rand = "0.6"
-rand_xorshift = "0.1"
+rand_xorshift = "0.2"
 tokio = "0.1"
 tokio-codec = "0.1"
 futures = "0.1.17"
