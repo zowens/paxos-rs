@@ -57,6 +57,7 @@ mod state;
 mod statemachine;
 pub mod timer;
 mod value;
+mod bytes_value;
 
 pub use config::Configuration;
 use master::{DistinguishedProposer, MasterStrategy, Masterless};
@@ -148,8 +149,8 @@ impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> MultiPaxosBuilder<R, M
     }
 
     /// Builds the multi-paxos instance
-    pub fn build(self) -> (ProposalSender<R::Command>, MultiPaxos<R, M, S>) {
-        let (sink, stream) = proposals::proposal_channel::<R::Command>();
+    pub fn build(self) -> (ProposalSender, MultiPaxos<R, M, S>) {
+        let (sink, stream) = proposals::proposal_channel();
         let multi_paxos = MultiPaxos::new(
             self.scheduler,
             stream,

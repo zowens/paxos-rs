@@ -2,25 +2,23 @@ use bytes::{BufMut, BytesMut};
 use config::Configuration;
 use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use messages::{ClusterMessage, MultiPaxosMessage};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_cbor::{de, ser};
 use std::fmt;
 use std::io;
-use std::marker::PhantomData;
 use std::net::SocketAddr;
 use tokio::net::{UdpFramed, UdpSocket};
 use tokio::runtime::Runtime;
 use tokio_io::codec::{Decoder, Encoder};
 
 #[derive(Default)]
-struct MultiPaxosCodec<V: DeserializeOwned + Serialize>(PhantomData<V>);
+struct MultiPaxosCodec;
 
-impl<V: DeserializeOwned + Serialize> Decoder for MultiPaxosCodec<V> {
-    type Item = MultiPaxosMessage<V>;
+impl Decoder for MultiPaxosCodec {
+    type Item = MultiPaxosMessage;
     type Error = io::Error;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match de::from_slice::<MultiPaxosMessage<V>>(src) {
+        match de::from_slice::<MultiPaxosMessage>(src) {
             Ok(msg) => Ok(Some(msg)),
             Err(e) => {
                 error!("Invalid CBOR data sent: {}", e);
@@ -33,8 +31,8 @@ impl<V: DeserializeOwned + Serialize> Decoder for MultiPaxosCodec<V> {
     }
 }
 
-impl<V: DeserializeOwned + Serialize> Encoder for MultiPaxosCodec<V> {
-    type Item = MultiPaxosMessage<V>;
+impl Encoder for MultiPaxosCodec {
+    type Item = MultiPaxosMessage;
     type Error = io::Error;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let w = dst.writer();
@@ -52,21 +50,21 @@ impl<V: DeserializeOwned + Serialize> Encoder for MultiPaxosCodec<V> {
 }
 
 /// Multi-paxos node that receives and sends nodes over a network.
-pub struct NetworkedMultiPaxos<V, S>
+pub struct NetworkedMultiPaxos<S>
 where
-    S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
-    S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
+    S: Stream<Item = ClusterMessage, Error = io::Error>,
+    S: Sink<SinkItem = ClusterMessage, SinkError = io::Error>,
 {
     s: S,
     config: Configuration,
 }
 
-impl<V, S> Sink for NetworkedMultiPaxos<V, S>
+impl<S> Sink for NetworkedMultiPaxos<S>
 where
-    S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
-    S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
+    S: Stream<Item = ClusterMessage, Error = io::Error>,
+    S: Sink<SinkItem = ClusterMessage, SinkError = io::Error>,
 {
-    type SinkItem = (MultiPaxosMessage<V>, SocketAddr);
+    type SinkItem = (MultiPaxosMessage, SocketAddr);
     type SinkError = io::Error;
 
     fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
@@ -96,12 +94,12 @@ where
     }
 }
 
-impl<V, S> Stream for NetworkedMultiPaxos<V, S>
+impl<S> Stream for NetworkedMultiPaxos<S>
 where
-    S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
-    S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
+    S: Stream<Item = ClusterMessage, Error = io::Error>,
+    S: Sink<SinkItem = ClusterMessage, SinkError = io::Error>,
 {
-    type Item = (MultiPaxosMessage<V>, SocketAddr);
+    type Item = (MultiPaxosMessage, SocketAddr);
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -150,12 +148,12 @@ impl UdpServer {
     }
 
     /// Runs a multi-paxos node, blocking until the program is terminated.
-    pub fn run<S: Send + 'static, V: Send + DeserializeOwned + Serialize + 'static>(
+    pub fn run<S: Send + 'static>(
         mut self,
         multipaxos: S,
     ) where
-        S: Stream<Item = ClusterMessage<V>, Error = io::Error>,
-        S: Sink<SinkItem = ClusterMessage<V>, SinkError = io::Error>,
+        S: Stream<Item = ClusterMessage, Error = io::Error>,
+        S: Sink<SinkItem = ClusterMessage, SinkError = io::Error>,
     {
         let multipaxos = NetworkedMultiPaxos {
             s: multipaxos,
@@ -163,7 +161,7 @@ impl UdpServer {
         };
         let (sink, stream) = multipaxos.split();
 
-        let codec: MultiPaxosCodec<V> = MultiPaxosCodec(PhantomData);
+        let codec: MultiPaxosCodec = MultiPaxosCodec;
         let (net_sink, net_stream) = UdpFramed::new(self.socket, codec).split();
 
         // send replies from upstream to the network
