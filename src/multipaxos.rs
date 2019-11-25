@@ -12,6 +12,7 @@ use statemachine::*;
 use std::collections::VecDeque;
 use std::io;
 use timer::*;
+use bytes::Bytes;
 
 /// `MultiPaxos` receives messages and attempts to receive consensus on a replicated
 /// value. Multiple instances of the paxos algorithm are chained together.
@@ -27,21 +28,21 @@ use timer::*;
 /// is separated from any networking concerns.
 pub struct MultiPaxos<R: ReplicatedState, M: MasterStrategy, S: Scheduler = FuturesScheduler> {
     state_machine: R,
-    state_handler: StateHandler<R::Command>,
+    state_handler: StateHandler,
 
     instance: Instance,
-    paxos: PaxosInstance<R::Command>,
+    paxos: PaxosInstance,
     config: Configuration,
 
     // downstream is sent out from this node
-    downstream: VecDeque<ClusterMessage<R::Command>>,
+    downstream: VecDeque<ClusterMessage>,
     downstream_blocked: Option<task::Task>,
 
     // proposals received async
-    proposal_receiver: ProposalReceiver<R::Command>,
+    proposal_receiver: ProposalReceiver,
 
     // timers for driving resolution
-    retransmit_timer: RetransmitTimer<S, ProposerMsg<R::Command>>,
+    retransmit_timer: RetransmitTimer<S, ProposerMsg>,
     sync_timer: RandomPeerSyncTimer<S>,
     master_strategy: M,
 }
@@ -49,19 +50,19 @@ pub struct MultiPaxos<R: ReplicatedState, M: MasterStrategy, S: Scheduler = Futu
 impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
     pub(crate) fn new(
         scheduler: S,
-        proposal_receiver: ProposalReceiver<R::Command>,
+        proposal_receiver: ProposalReceiver,
         mut state_machine: R,
         config: Configuration,
         master_strategy: M,
     ) -> MultiPaxos<R, M, S> {
-        let mut state_handler = StateHandler::<R::Command>::new();
+        let mut state_handler = StateHandler::new();
 
         let state = state_handler.load().unwrap_or_default();
-        let paxos = PaxosInstance::<R::Command>::new(
+        let paxos = PaxosInstance::new(
             config.current(),
             config.quorum_size(),
             state.promised,
-            state.accepted,
+            state.accepted.map(|p| PromiseValue(p.0, p.1)),
         );
 
         if let Some(v) = state.current_value.clone() {
@@ -91,7 +92,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
         &mut self,
         instance: Instance,
         accepted_bal: Option<Ballot>,
-        value: R::Command,
+        value: Bytes,
     ) {
         self.state_machine.apply_value(instance, value.clone());
 
@@ -118,7 +119,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
     }
 
     #[inline]
-    fn send_multipaxos(&mut self, peer: NodeId, message: MultiPaxosMessage<R::Command>) {
+    fn send_multipaxos(&mut self, peer: NodeId, message: MultiPaxosMessage) {
         debug!("[SEND] peer={} : {:?}", peer, message);
         self.downstream.push_back(ClusterMessage { peer, message });
 
@@ -145,7 +146,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
     }
 
     /// Broadcasts ACCEPT messages to all peers
-    fn send_accept(&mut self, accept: &Accept<R::Command>) {
+    fn send_accept(&mut self, accept: &Accept) {
         debug!("[BROADCAST] : {:?}", accept);
 
         let peers = self.config.peers();
@@ -162,7 +163,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
     }
 
     /// Broadcasts ACCEPTED messages to all peers
-    fn send_accepted(&mut self, accepted: &Accepted<R::Command>) {
+    fn send_accepted(&mut self, accepted: &Accepted) {
         debug!("[BROADCAST] : {:?}", accepted);
 
         let inst = self.instance;
@@ -178,7 +179,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
         }
     }
 
-    fn propose_update(&mut self, value: R::Command) {
+    fn propose_update(&mut self, value: Bytes) {
         match self.master_strategy.proposal_action() {
             ProposalAction::CurrentNode => {
                 let inst = self.instance;
@@ -205,7 +206,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
         }
     }
 
-    fn poll_retransmit(&mut self, inst: Instance, msg: ProposerMsg<R::Command>) {
+    fn poll_retransmit(&mut self, inst: Instance, msg: ProposerMsg) {
         if inst != self.instance {
             // TODO: assert?
             warn!("Retransmit for previous instance dropped");
@@ -257,9 +258,10 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
             Either::Left(promise) => {
                 self.state_handler.persist(State {
                     instance: inst,
-                    current_value: self.state_machine.snapshot(inst).clone(),
+                    // TODO: this is definitely wrong
+                    current_value: None,
                     promised: Some(promise.message.0),
-                    accepted: promise.message.1.clone(),
+                    accepted: promise.message.1.clone().map(|pv| (pv.0, pv.1)),
                 });
 
                 self.send_multipaxos(
@@ -276,7 +278,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
         }
     }
 
-    fn on_promise(&mut self, peer: NodeId, inst: Instance, promise: Promise<R::Command>) {
+    fn on_promise(&mut self, peer: NodeId, inst: Instance, promise: Promise) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
@@ -307,7 +309,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
         self.master_strategy.on_reject(inst);
     }
 
-    fn on_accept(&mut self, peer: NodeId, inst: Instance, accept: Accept<R::Command>) {
+    fn on_accept(&mut self, peer: NodeId, inst: Instance, accept: Accept) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
@@ -315,9 +317,10 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
 
         match self.paxos.receive_accept(peer, accept) {
             Either::Left((accepted, None)) => {
+                let current_value = self.state_machine.snapshot(inst);
                 self.state_handler.persist(State {
                     instance: self.instance,
-                    current_value: self.state_machine.snapshot(inst).clone(),
+                    current_value,
                     promised: Some(accepted.0),
                     accepted: Some((accepted.0, accepted.1.clone())),
                 });
@@ -350,7 +353,7 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
         self.master_strategy.on_accept(inst);
     }
 
-    fn on_accepted(&mut self, peer: NodeId, inst: Instance, accepted: Accepted<R::Command>) {
+    fn on_accepted(&mut self, peer: NodeId, inst: Instance, accepted: Accepted) {
         // ignore previous or future instances
         if self.instance != inst {
             return;
@@ -383,19 +386,21 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
         }
     }
 
-    fn on_catchup(&mut self, inst: Instance, current: R::Command) {
+    fn on_catchup(&mut self, inst: Instance, current: Bytes) {
         // only accept a catchup value if it is greater than
         // the current instance known to this node
-        if inst > self.instance {
-            // TODO: this call shouldn't have a random -1 without reason...
-            // probably should fix advance_instance logic
-            self.advance_instance(inst - 1, None, current);
+        if inst <= self.instance {
+            trace!("Cannot catch up on instance <= current instance");
+            return;
         }
+        // TODO: this call shouldn't have a random -1 without reason...
+        // probably should fix advance_instance logic
+        self.advance_instance(inst - 1, None, current);
     }
 }
 
 impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Sink for MultiPaxos<R, M, S> {
-    type SinkItem = ClusterMessage<R::Command>;
+    type SinkItem = ClusterMessage;
     type SinkError = io::Error;
 
     fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
@@ -446,9 +451,9 @@ fn from_poll<V>(s: Poll<Option<V>, io::Error>) -> io::Result<Option<V>> {
 }
 
 impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Stream for MultiPaxos<R, M, S> {
-    type Item = ClusterMessage<R::Command>;
+    type Item = ClusterMessage;
     type Error = io::Error;
-    fn poll(&mut self) -> Poll<Option<ClusterMessage<R::Command>>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<ClusterMessage>, io::Error> {
         // poll for retransmission
         while let Some((inst, msg)) = from_poll(self.retransmit_timer.poll())? {
             self.poll_retransmit(inst, msg);
@@ -487,12 +492,10 @@ mod tests {
     use super::*;
     use futures::executor::{spawn, Notify, NotifyHandle};
     use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
-    use proposals::*;
     use std::cell::RefCell;
     use std::collections::HashSet;
     use std::rc::Rc;
     use std::time::Duration;
-    use value::*;
 
     #[test]
     fn catchup() {
@@ -742,7 +745,7 @@ mod tests {
                     0,
                     Promise(
                         Ballot(10, 3),
-                        Some((Ballot(5, 1), vec![0x0, 0x1, 0xff].into()))
+                        Some(PromiseValue(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()))
                     )
                 ),
             },
@@ -1674,11 +1677,11 @@ mod tests {
         struct RedirectMasterStrategy(Configuration);
 
         impl MasterStrategy for RedirectMasterStrategy {
-            fn next_instance<V: Value>(
+            fn next_instance(
                 &mut self,
                 _inst: Instance,
                 _accepted_bal: Option<Ballot>,
-            ) -> PaxosInstance<V> {
+            ) -> PaxosInstance {
                 PaxosInstance::new(self.0.current(), self.0.quorum_size(), None, None)
             }
 
@@ -1738,7 +1741,7 @@ mod tests {
     fn collect_messages<S: Scheduler, M: MasterStrategy>(
         multi_paxos: MultiPaxos<TestStateMachine, M, S>,
     ) -> (
-        Vec<ClusterMessage<BytesValue>>,
+        Vec<ClusterMessage>,
         MultiPaxos<TestStateMachine, M, S>,
     ) {
         let mut s = spawn(multi_paxos);
@@ -1767,16 +1770,14 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct TestStateMachine(Vec<(Instance, BytesValue)>);
+    struct TestStateMachine(Vec<(Instance, Bytes)>);
 
     impl ReplicatedState for TestStateMachine {
-        type Command = BytesValue;
-
-        fn apply_value(&mut self, instance: Instance, value: BytesValue) {
+        fn apply_value(&mut self, instance: Instance, value: Bytes) {
             self.0.push((instance, value));
         }
 
-        fn snapshot(&self, _instance: Instance) -> Option<BytesValue> {
+        fn snapshot(&self, _instance: Instance) -> Option<Bytes> {
             self.0.iter().next_back().map(|v| v.1.clone())
         }
     }

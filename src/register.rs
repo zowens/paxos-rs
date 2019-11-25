@@ -1,12 +1,12 @@
 use super::Instance;
 use statemachine::ReplicatedState;
 use std::sync::{Arc, RwLock};
-use value::BytesValue;
+use bytes::Bytes;
 
 /// Replicated mutable value register
 #[derive(Clone)]
 pub struct Register {
-    value: Arc<RwLock<Option<BytesValue>>>,
+    value: Arc<RwLock<Option<Bytes>>>,
 }
 
 impl Register {
@@ -18,10 +18,7 @@ impl Register {
 }
 
 impl ReplicatedState for Register {
-    // TODO: generic value type
-    type Command = BytesValue;
-
-    fn apply_value(&mut self, instance: Instance, value: BytesValue) {
+    fn apply_value(&mut self, instance: Instance, value: Bytes) {
         info!(
             "[RESOLUTION] with value at instance {}: {:?}",
             instance, value
@@ -31,7 +28,7 @@ impl ReplicatedState for Register {
         *val = Some(value);
     }
 
-    fn snapshot(&self, _instance: Instance) -> Option<BytesValue> {
+    fn snapshot(&self, _instance: Instance) -> Option<Bytes> {
         let val = self.value.read().unwrap();
         val.clone()
     }

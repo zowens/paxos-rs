@@ -1,17 +1,16 @@
 use super::Instance;
 use paxos::Ballot;
-use std::marker::PhantomData;
-use value::Value;
+use bytes::Bytes;
 
-pub struct State<V: Value> {
+pub struct State {
     pub instance: Instance,
-    pub current_value: Option<V>,
+    pub current_value: Option<Bytes>,
     pub promised: Option<Ballot>,
-    pub accepted: Option<(Ballot, V)>,
+    pub accepted: Option<(Ballot, Bytes)>,
 }
 
-impl<V: Value> Default for State<V> {
-    fn default() -> State<V> {
+impl Default for State {
+    fn default() -> State {
         State {
             instance: 0,
             current_value: None,
@@ -21,19 +20,22 @@ impl<V: Value> Default for State<V> {
     }
 }
 
-pub struct StateHandler<V>(PhantomData<V>);
+pub struct StateHandler {
+    _private: (),
+}
 
-impl<V: Value> StateHandler<V> {
-    pub fn new() -> StateHandler<V> {
-        StateHandler(PhantomData)
+impl StateHandler {
+    pub fn new() -> StateHandler {
+        StateHandler{
+            _private: (),
+        }
     }
 
-    pub fn load(&mut self) -> Option<State<V>> {
-        // TODO: implement
+    pub fn load(&mut self) -> Option<State> {
         None
     }
 
-    pub fn persist(&mut self, _state: State<V>) {
+    pub fn persist(&mut self, _state: State) {
         // TODO: implement
     }
 }

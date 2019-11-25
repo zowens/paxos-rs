@@ -5,7 +5,6 @@ use paxos::{Ballot, PaxosInstance};
 use std::io;
 use std::time::Duration;
 use timer::{InstanceResolutionTimer, Scheduler};
-use value::Value;
 
 // TODO: rename this
 
@@ -32,11 +31,11 @@ pub trait MasterStrategy: Stream<Item = Action, Error = io::Error> {
     /// Forms a new instance of Paxos. Primarily this controls whether or not
     /// the proposer starts out with Phase 1 complete when it has been implicitly
     /// elected to be the distinguished proposer.
-    fn next_instance<V: Value>(
+    fn next_instance(
         &mut self,
         inst: Instance,
         accepted_bal: Option<Ballot>,
-    ) -> PaxosInstance<V>;
+    ) -> PaxosInstance;
 
     /// Callback when the `inst` instance of Paxos receives an `ACCEPT` message
     fn on_reject(&mut self, inst: Instance);
@@ -71,11 +70,11 @@ impl<S: Scheduler> Masterless<S> {
 }
 
 impl<S: Scheduler> MasterStrategy for Masterless<S> {
-    fn next_instance<V: Value>(
+    fn next_instance(
         &mut self,
         _inst: Instance,
         _accepted_bal: Option<Ballot>,
-    ) -> PaxosInstance<V> {
+    ) -> PaxosInstance {
         self.prepare_timer.reset();
         PaxosInstance::new(self.config.current(), self.config.quorum_size(), None, None)
     }
@@ -189,11 +188,11 @@ impl<S: Scheduler> DistinguishedProposer<S> {
 }
 
 impl<S: Scheduler> MasterStrategy for DistinguishedProposer<S> {
-    fn next_instance<V: Value>(
+    fn next_instance(
         &mut self,
         _inst: Instance,
         accepted_bal: Option<Ballot>,
-    ) -> PaxosInstance<V> {
+    ) -> PaxosInstance {
         match accepted_bal {
             // once the node has obtained acceptance, it has leadership of
             // instances >= current_inst.

@@ -81,6 +81,7 @@ impl QuorumSet {
 
     #[inline]
     fn binary_search(&self, n: NodeId) -> Result<usize, usize> {
+        // TODO: remove binary search in favor of linear
         self.values.binary_search_by(move |v| match *v {
             Some(v) => v.cmp(&n),
             None => Ordering::Greater,

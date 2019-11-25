@@ -7,7 +7,7 @@ extern crate tokio_io;
 
 use futures::{Future, Stream};
 use paxos::{
-    BytesValue, Configuration, MultiPaxosBuilder, ProposalSender, Register, ReplicatedState,
+    Configuration, MultiPaxosBuilder, ProposalSender, Register, ReplicatedState,
     UdpServer,
 };
 use std::borrow::Borrow;
@@ -43,7 +43,7 @@ enum Command {
 fn client_handler(
     register: Register,
     addr: SocketAddr,
-    proposals: ProposalSender<BytesValue>,
+    proposals: ProposalSender,
 ) -> impl Future<Item = (), Error = ()> {
     let socket = TcpListener::bind(&addr).unwrap();
 
