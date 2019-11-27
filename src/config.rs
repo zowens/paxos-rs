@@ -1,5 +1,4 @@
-use rand::{thread_rng, Rng, SeedableRng};
-use rand_xorshift::XorShiftRng;
+use rand::prelude::{thread_rng, SmallRng, Rng, SeedableRng};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::fmt;
@@ -16,7 +15,7 @@ pub struct Configuration {
     current: (NodeId, SocketAddr),
     peers: HashMap<NodeId, SocketAddr>,
     socket_to_peer: HashMap<SocketAddr, NodeId>,
-    rand: XorShiftRng,
+    rand: SmallRng,
 }
 
 impl Configuration {
@@ -32,7 +31,7 @@ impl Configuration {
             current,
             peers,
             socket_to_peer,
-            rand: XorShiftRng::from_rng(thread_rng()).unwrap(),
+            rand: SmallRng::from_rng(thread_rng()).unwrap(),
         }
     }
 

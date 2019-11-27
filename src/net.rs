@@ -4,8 +4,7 @@ use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
 use messages::{ClusterMessage, MultiPaxosMessage};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_cbor::de;
-use serde_cbor::ser;
+use serde_cbor::{de, ser};
 use std::fmt;
 use std::io;
 use std::marker::PhantomData;
@@ -38,8 +37,8 @@ impl<V: DeserializeOwned + Serialize> Encoder for MultiPaxosCodec<V> {
     type Item = MultiPaxosMessage<V>;
     type Error = io::Error;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let mut w = dst.writer();
-        match ser::to_writer_packed(&mut w, &item) {
+        let w = dst.writer();
+        match item.serialize(&mut ser::Serializer::new(&mut ser::IoWrite::new(w)).packed_format()) {
             Ok(_) => Ok(()),
             Err(e) => {
                 error!("Error serializing message: {}", e);
