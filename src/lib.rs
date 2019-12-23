@@ -56,7 +56,6 @@ mod register;
 mod state;
 mod statemachine;
 pub mod timer;
-mod value;
 mod bytes_value;
 
 pub use config::Configuration;
@@ -67,7 +66,6 @@ pub use proposals::ProposalSender;
 pub use register::Register;
 pub use statemachine::ReplicatedState;
 use timer::{FuturesScheduler, Scheduler};
-pub use value::{BytesValue, Value};
 
 /// An instance is a _round_ of the Paxos algorithm. Instances are chained to
 /// form a sequence of values. Once an instance receives consensus, the next
