@@ -1,14 +1,12 @@
 //! Timing abstractions that implement types from the `futures` crate.
 use super::Instance;
-use futures::stream::{Map, MapErr};
-use futures::task;
-use futures::{Async, Poll, Stream};
+use futures::Stream;
 use rand::{thread_rng, Rng};
 use std::cmp::min;
-use std::io;
-use std::mem;
-use std::time::{Duration, Instant};
-use tokio_timer::{self, Interval};
+use std::time::Duration;
+use std::task::{Poll, Waker, Context};
+use tokio::time::{Interval, interval};
+use std::pin::Pin;
 
 /// Starting timeout for restarting Phase 1
 const RESOLUTION_STARTING_MS: u64 = 5;
@@ -19,58 +17,22 @@ const RESOLUTION_SILENCE_TIMEOUT: u64 = 5000;
 /// Periodic synchronization time
 const SYNC_TIME_MS: u64 = 5000;
 
-/// Timing scheduler that can generate a stream of events on a fixed delay.
-pub trait Scheduler: Clone {
-    /// Stream emitting periodic values
-    type Stream: Stream<Item = (), Error = io::Error>;
-
-    /// Periodically emits a value into the stream after a delay
-    fn interval(&mut self, delay: Duration) -> Self::Stream;
-}
-
-/// Scheduler that utilizes a timeout thread for scheduling
-#[derive(Clone, Default)]
-pub struct FuturesScheduler;
-
-impl Scheduler for FuturesScheduler {
-    type Stream = Map<MapErr<Interval, fn(tokio_timer::Error) -> io::Error>, fn(Instant) -> ()>;
-
-    fn interval(&mut self, delay: Duration) -> Self::Stream {
-        fn map_tokio_err(e: tokio_timer::Error) -> io::Error {
-            error!("Error with timer: {}", e);
-            io::Error::new(io::ErrorKind::Other, "Timer error")
-        }
-
-        fn map_tokio_item(_: Instant) -> () {
-            ()
-        }
-
-        let x: MapErr<Interval, fn(tokio_timer::Error) -> io::Error> =
-            Interval::new(Instant::now() + delay, delay).map_err(map_tokio_err);
-        x.map(map_tokio_item)
-    }
-}
-
-enum TimerState<S: Scheduler, M: Clone> {
+enum TimerState<M: Clone> {
     Empty,
-    Scheduled(S::Stream, M),
-    Parked(task::Task),
+    Scheduled(Interval, M),
+    Parked(Waker),
 }
 
-impl<S: Scheduler, M: Clone> TimerState<S, M> {
-    fn poll_stream(&mut self) -> Poll<Option<M>, io::Error> {
-        match *self {
-            TimerState::Scheduled(ref mut s, ref m) => match s.poll()? {
-                Async::Ready(Some(())) => Ok(Async::Ready(Some(m.clone()))),
-                Async::Ready(None) => unreachable!("Infinite stream from Scheduler terminated"),
-                Async::NotReady => Ok(Async::NotReady),
-            },
-            // otherwise, park the current task
-            // TODO: do we need to re-park?
-            _ => {
-                *self = TimerState::Parked(task::current());
-                Ok(Async::NotReady)
+impl<M: Clone> TimerState<M> {
+    fn poll_stream(&mut self, cx: &mut Context) -> Poll<()> {
+        if let TimerState::Scheduled(ref mut s, ref mut m) = *self {
+            match ready!(s.poll()) {
+                Some(_) => Poll::Ready(m.clone()),
+                None => unreachable!("Infinite stream from scheduler terminated")
             }
+        } else {
+            *self = TimerState::Parked(cx.waker());
+            Poll::Pending
         }
     }
 
@@ -80,33 +42,28 @@ impl<S: Scheduler, M: Clone> TimerState<S, M> {
         }
     }
 
-    fn put_message(&mut self, s: S::Stream, msg: M) {
-        let mut m = TimerState::Scheduled(s, msg);
-        mem::swap(self, &mut m);
-        if let TimerState::Parked(t) = m {
-            t.notify();
+    fn put_message(&mut self, s: Interval, msg: M) {
+        let waker = if let TimerState::Parked(ref waker) = *self {
+            Some(waker.clone())
+        } else {
+            None
+        };
+
+        *self = TimerState::Scheduled(s, msg);
+        if let Some(waker) = waker {
+            waker.wake();
         }
     }
 }
 
 /// Timer that will resend a message to the downstream peers in order
 /// to drive consensus.
-pub(crate) struct RetransmitTimer<S: Scheduler, V: Clone> {
-    scheduler: S,
-    state: TimerState<S, (Instance, V)>,
+pub(crate) struct RetransmitTimer<V: Clone> {
+    state: TimerState<(Instance, V)>,
 }
 
-impl<S, V: Clone> RetransmitTimer<S, V>
-where
-    S: Scheduler,
+impl<V: Clone> RetransmitTimer<V>
 {
-    pub fn new(scheduler: S) -> RetransmitTimer<S, V> {
-        RetransmitTimer {
-            scheduler,
-            state: TimerState::Empty,
-        }
-    }
-
     /// Clears the current timer
     pub fn reset(&mut self) {
         self.state.reset();
@@ -116,7 +73,7 @@ where
     pub fn schedule(&mut self, inst: Instance, msg: V) {
         trace!("Scheduling retransmit");
         self.state.put_message(
-            self.scheduler.interval(Duration::from_millis(1000)),
+            interval(Duration::from_millis(1000)),
             (inst, msg),
         );
     }
@@ -130,32 +87,30 @@ where
     }
 }
 
-impl<S: Scheduler, V: Clone> Stream for RetransmitTimer<S, V> {
-    type Item = (Instance, V);
-    type Error = io::Error;
+impl<V: Clone> Default for RetransmitTimer<V> {
+    fn default() -> RetransmitTimer<V> {
+        RetransmitTimer {
+            state: TimerState::Empty,
+        }
+    }
+}
 
-    fn poll(&mut self) -> Poll<Option<(Instance, V)>, io::Error> {
-        self.state.poll_stream()
+impl<V: Clone> Stream for RetransmitTimer<V> {
+    type Item = (Instance, V);
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<(Instance, V)>> {
+        unsafe { self.map_unchecked_mut(|x| &mut x.state) }.poll_stream(cx)
     }
 }
 
 /// Timer that allows the node to re-enter Phase 1 in order to
 /// drive resolution with a higher ballot.
-pub(crate) struct InstanceResolutionTimer<S: Scheduler> {
-    scheduler: S,
+pub(crate) struct InstanceResolutionTimer {
     backoff_ms: u64,
-    state: TimerState<S, Instance>,
+    state: TimerState<Instance>,
 }
 
-impl<S: Scheduler> InstanceResolutionTimer<S> {
-    pub fn new(scheduler: S) -> InstanceResolutionTimer<S> {
-        InstanceResolutionTimer {
-            scheduler,
-            backoff_ms: RESOLUTION_STARTING_MS,
-            state: TimerState::Empty,
-        }
-    }
-
+impl InstanceResolutionTimer {
     /// Schedules a timer to start Phase 1 when a node receives an ACCEPT
     /// message (Phase 2b) and does not hear an ACCEPTED message from a
     /// quorum of acceptors.
@@ -191,7 +146,7 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
     }
 
     #[cfg(test)]
-    pub fn stream(&self) -> Option<&S::Stream> {
+    pub fn stream(&self) -> Option<&Interval> {
         match self.state {
             TimerState::Scheduled(ref s, _) => Some(s),
             _ => None,
@@ -199,38 +154,47 @@ impl<S: Scheduler> InstanceResolutionTimer<S> {
     }
 }
 
-impl<S: Scheduler> Stream for InstanceResolutionTimer<S> {
-    type Item = Instance;
-    type Error = io::Error;
+impl Default for InstanceResolutionTimer {
+    fn default() -> InstanceResolutionTimer {
+        InstanceResolutionTimer {
+            backoff_ms: RESOLUTION_STARTING_MS,
+            state: TimerState::Empty,
+        }
+    }
+}
 
-    fn poll(&mut self) -> Poll<Option<Instance>, io::Error> {
-        self.state.poll_stream()
+impl Stream for InstanceResolutionTimer {
+    type Item = Instance;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Instance>> {
+        unsafe{ self.get_unchecked_mut().state }.poll_stream()
     }
 }
 
 /// Timer stream for periodic synchronization with a peer.
-pub(crate) struct RandomPeerSyncTimer<S: Scheduler> {
-    interval: S::Stream,
+pub(crate) struct RandomPeerSyncTimer {
+    interval: Interval,
 }
 
-impl<S: Scheduler> RandomPeerSyncTimer<S> {
-    pub fn new(mut scheduler: S) -> RandomPeerSyncTimer<S> {
-        RandomPeerSyncTimer {
-            interval: scheduler.interval(Duration::from_millis(SYNC_TIME_MS)),
-        }
-    }
-
+impl RandomPeerSyncTimer {
     #[cfg(test)]
     pub fn stream(&self) -> &S::Stream {
         &self.interval
     }
 }
 
-impl<S: Scheduler> Stream for RandomPeerSyncTimer<S> {
-    type Item = ();
-    type Error = io::Error;
+impl Default for RandomPeerSyncTimer {
+    fn default() -> RandomPeerSyncTimer {
+        RandomPeerSyncTimer {
+            interval: interval(Duration::from_millis(SYNC_TIME_MS)),
+        }
+    }
+}
 
-    fn poll(&mut self) -> Poll<Option<()>, io::Error> {
-        self.interval.poll()
+impl Stream for RandomPeerSyncTimer {
+    type Item = ();
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
+        unsafe { self.get_unchecked_mut().interval }.poll().map(|_| ())
     }
 }
