@@ -1,10 +1,13 @@
 use super::Instance;
 use config::{Configuration, NodeId};
-use futures::{Async, Poll, Stream};
+use std::pin::Pin;
 use paxos::{Ballot, PaxosInstance};
 use std::io;
+use std::task::{Context, Poll};
+use futures::stream::Stream;
 use std::time::Duration;
-use timer::{InstanceResolutionTimer, Scheduler};
+use timer::InstanceResolutionTimer;
+use tokio::time::Interval;
 
 // TODO: rename this
 
@@ -49,16 +52,16 @@ pub trait MasterStrategy: Stream<Item = Action, Error = io::Error> {
 
 /// `MasterStrategy` where no node acts as a master node. All instances must go through
 /// Phase 1 of the Paxos algorithm.
-pub struct Masterless<S: Scheduler> {
-    prepare_timer: InstanceResolutionTimer<S>,
+pub struct Masterless {
+    prepare_timer: InstanceResolutionTimer,
     config: Configuration,
 }
 
-impl<S: Scheduler> Masterless<S> {
+impl Masterless {
     /// Creates a new masterless strategy
-    pub fn new(config: Configuration, scheduler: S) -> Masterless<S> {
+    pub fn new(config: Configuration) -> Masterless {
         Masterless {
-            prepare_timer: InstanceResolutionTimer::new(scheduler),
+            prepare_timer: InstanceResolutionTimer::default(),
             config,
         }
     }
@@ -69,7 +72,7 @@ impl<S: Scheduler> Masterless<S> {
     }
 }
 
-impl<S: Scheduler> MasterStrategy for Masterless<S> {
+impl MasterStrategy for Masterless {
     fn next_instance(
         &mut self,
         _inst: Instance,
@@ -79,29 +82,25 @@ impl<S: Scheduler> MasterStrategy for Masterless<S> {
         PaxosInstance::new(self.config.current(), self.config.quorum_size(), None, None)
     }
 
-    #[inline]
     fn on_reject(&mut self, inst: Instance) {
         self.prepare_timer.schedule_retry(inst);
     }
 
-    #[inline]
     fn on_accept(&mut self, inst: Instance) {
         self.prepare_timer.schedule_timeout(inst);
     }
 
-    #[inline]
     fn proposal_action(&self) -> ProposalAction {
         ProposalAction::CurrentNode
     }
 }
 
-impl<S: Scheduler> Stream for Masterless<S> {
+impl Stream for Masterless {
     type Item = Action;
-    type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<Action>, io::Error> {
-        let timer = try_ready!(self.prepare_timer.poll());
-        Ok(Async::Ready(timer.map(Action::Prepare)))
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Action>> {
+        let timer = ready!(unsafe {self.map_unchecked(|m| m.prepare_timer()) }.poll());
+        timer.map(Action::Prepare)
     }
 }
 
@@ -152,16 +151,16 @@ impl<S: Scheduler> Stream for Masterless<S> {
 //            PREPARE with higher ballot
 const LEADERSHIP_TIMEOUT: Duration = Duration::from_secs(10);
 
-enum LeadershipState<S: Scheduler> {
+enum LeadershipState {
     /// No node is currently the master
     Leaderless {
-        prepare_timer: InstanceResolutionTimer<S>,
+        prepare_timer: InstanceResolutionTimer,
     },
     /// The current node is the leader
-    Leader { leadership_timeout: S::Stream },
+    Leader { leadership_timeout: Interval },
     /// This node is currently the follower node
     Follower {
-        leadership_timeout: S::Stream,
+        leadership_timeout: Interval,
         leader_node: NodeId,
     },
 }
@@ -170,24 +169,22 @@ enum LeadershipState<S: Scheduler> {
 /// has the advantage of utilizing the previous instance's Phase 2 quorum as the implicit
 /// Phase 1 quorum for subsequent instances, which reduces the number of messages needed
 /// to reach quorum.
-pub struct DistinguishedProposer<S: Scheduler> {
-    scheduler: S,
-    state: LeadershipState<S>,
+pub struct DistinguishedProposer {
+    state: LeadershipState,
     config: Configuration,
 }
 
-impl<S: Scheduler> DistinguishedProposer<S> {
-    pub fn new(config: Configuration, scheduler: S) -> DistinguishedProposer<S> {
-        let prepare_timer = InstanceResolutionTimer::new(scheduler.clone());
+impl DistinguishedProposer {
+    pub fn new(config: Configuration) -> DistinguishedProposer {
+        let prepare_timer = InstanceResolutionTimer::default();
         DistinguishedProposer {
-            scheduler,
             state: LeadershipState::Leaderless { prepare_timer },
             config,
         }
     }
 }
 
-impl<S: Scheduler> MasterStrategy for DistinguishedProposer<S> {
+impl MasterStrategy for DistinguishedProposer {
     fn next_instance(
         &mut self,
         _inst: Instance,
@@ -276,23 +273,22 @@ impl<S: Scheduler> MasterStrategy for DistinguishedProposer<S> {
     }
 }
 
-impl<S: Scheduler> Stream for DistinguishedProposer<S> {
+impl Stream for DistinguishedProposer {
     type Item = Action;
-    type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<Action>, io::Error> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Action>> {
         loop {
             let step_down = match self.state {
                 LeadershipState::Leaderless {
                     ref mut prepare_timer,
                 } => {
-                    let prepare = try_ready!(prepare_timer.poll());
-                    return Ok(Async::Ready(prepare.map(Action::Prepare)));
+                    let prepare = ready!(prepare_timer.poll());
+                    return Poll::Ready(prepare.map(Action::Prepare));
                 }
                 LeadershipState::Leader {
                     ref mut leadership_timeout,
                 } => {
-                    try_ready!(leadership_timeout.poll());
+                    ready!(leadership_timeout.poll());
                     trace!("Stepping down as leader due to timeout");
                     true
                 }
@@ -300,7 +296,7 @@ impl<S: Scheduler> Stream for DistinguishedProposer<S> {
                     ref mut leadership_timeout,
                     leader_node,
                 } => {
-                    try_ready!(leadership_timeout.poll());
+                    ready!(leadership_timeout.poll());
                     trace!(
                         "Revoking distinguished proposer status from {} due to timeout",
                         leader_node
@@ -314,7 +310,7 @@ impl<S: Scheduler> Stream for DistinguishedProposer<S> {
             };
 
             if step_down {
-                return Ok(Async::Ready(Some(Action::RelasePhaseOneQuorum)));
+                return Poll::Ready(Some(Action::RelasePhaseOneQuorum));
             }
         }
     }
