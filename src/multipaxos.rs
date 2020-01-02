@@ -1,10 +1,12 @@
 use super::Instance;
 use config::*;
 use either::Either;
-use futures::task;
 use std::future::Future;
-use std::task::{Poll, Context};
+use std::task::{Poll, Context, Waker};
+use std::pin::Pin;
+use pin_project::pin_project;
 use futures::stream::Stream;
+use futures::sink::Sink;
 use master::*;
 use messages::*;
 use paxos::*;
@@ -28,7 +30,8 @@ use bytes::Bytes;
 /// `MultiPaxos` is both a `futures::Stream` and `futures::Sink`. It takes in messages
 /// and produces messages for other actors within the system. The algorithm itself
 /// is separated from any networking concerns.
-pub struct MultiPaxos<R: ReplicatedState, M: MasterStrategy, S: Scheduler = FuturesScheduler> {
+#[pin_project]
+pub struct MultiPaxos<R: ReplicatedState, M: MasterStrategy> {
     state_machine: R,
     state_handler: StateHandler,
 
@@ -38,25 +41,26 @@ pub struct MultiPaxos<R: ReplicatedState, M: MasterStrategy, S: Scheduler = Futu
 
     // downstream is sent out from this node
     downstream: VecDeque<ClusterMessage>,
-    downstream_blocked: Option<task::Task>,
+    downstream_blocked: Option<Waker>,
 
     // proposals received async
     proposal_receiver: ProposalReceiver,
 
     // timers for driving resolution
-    retransmit_timer: RetransmitTimer<S, ProposerMsg>,
-    sync_timer: RandomPeerSyncTimer<S>,
+    #[pin]
+    retransmit_timer: RetransmitTimer<ProposerMsg>,
+    #[pin]
+    sync_timer: RandomPeerSyncTimer,
     master_strategy: M,
 }
 
-impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
+impl<R: ReplicatedState, M: MasterStrategy> MultiPaxos<R, M> {
     pub(crate) fn new(
-        scheduler: S,
         proposal_receiver: ProposalReceiver,
         mut state_machine: R,
         config: Configuration,
         master_strategy: M,
-    ) -> MultiPaxos<R, M, S> {
+    ) -> MultiPaxos<R, M> {
         let mut state_handler = StateHandler::new();
 
         let state = state_handler.load().unwrap_or_default();
@@ -71,8 +75,8 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
             state_machine.apply_value(state.instance, v);
         }
 
-        let retransmit_timer = RetransmitTimer::new(scheduler.clone());
-        let sync_timer = RandomPeerSyncTimer::new(scheduler);
+        let retransmit_timer = RetransmitTimer::default();
+        let sync_timer = RandomPeerSyncTimer::default();
 
         MultiPaxos {
             state_machine,
@@ -401,12 +405,15 @@ impl<R: ReplicatedState, S: Scheduler, M: MasterStrategy> MultiPaxos<R, M, S> {
     }
 }
 
-impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Sink for MultiPaxos<R, M, S> {
-    type SinkItem = ClusterMessage;
-    type SinkError = io::Error;
+impl<R: ReplicatedState, M: MasterStrategy> Sink<ClusterMessage> for MultiPaxos<R, M> {
+    type Error = io::Error;
 
-    fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
-        let ClusterMessage { peer, message } = msg;
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: ClusterMessage) -> Result<(), Self::Error> {
+        let ClusterMessage { peer, message } = item;
         debug!("[RECEIVE] peer={}: {:?}", peer, message);
         match message {
             MultiPaxosMessage::Prepare(inst, prepare) => {
@@ -435,34 +442,37 @@ impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Sink for MultiPaxos<R,
             }
         }
 
-        Ok(AsyncSink::Ready)
+        Ok(())
     }
 
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
-        Ok(Async::Ready(()))
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 }
 
 #[inline]
-fn from_poll<V>(s: Poll<Option<V>, io::Error>) -> io::Result<Option<V>> {
+fn from_poll<V>(s: Poll<Option<V>>) -> Option<V> {
     match s {
-        Ok(Async::Ready(Some(v))) => Ok(Some(v)),
-        Ok(Async::Ready(None)) | Ok(Async::NotReady) => Ok(None),
-        Err(e) => Err(e),
+        Poll::Ready(Some(v)) => Ok(Some(v)),
+        Poll::Ready(None) | Poll::NotReady => None,
     }
 }
 
-impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Stream for MultiPaxos<R, M, S> {
+impl<R: ReplicatedState, M: MasterStrategy> Stream for MultiPaxos<R, M> {
     type Item = ClusterMessage;
-    type Error = io::Error;
-    fn poll(&mut self) -> Poll<Option<ClusterMessage>, io::Error> {
+
+    fn poll_next(self: Pin<&mut Self>, ctx: Context<'_>) -> Poll<Option<ClusterMessage>> {
         // poll for retransmission
-        while let Some((inst, msg)) = from_poll(self.retransmit_timer.poll())? {
+        while let Some((inst, msg)) = from_poll(self.retransmit_timer.poll()) {
             self.poll_retransmit(inst, msg);
         }
 
         // poll for master-related actions
-        while let Some(action) = from_poll(self.master_strategy.poll())? {
+        while let Some(action) = from_poll(self.master_strategy.poll()) {
             match action {
                 Action::Prepare(inst) => self.poll_restart_prepare(inst),
                 Action::RelasePhaseOneQuorum => self.paxos.revoke_leadership(),
@@ -470,7 +480,7 @@ impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Stream for MultiPaxos<
         }
 
         // poll for sync
-        while from_poll(self.sync_timer.poll())?.is_some() {
+        while from_poll(self.sync_timer.poll()).is_some() {
             self.poll_syncronization();
         }
 
@@ -481,10 +491,10 @@ impl<R: ReplicatedState, M: MasterStrategy, S: Scheduler> Stream for MultiPaxos<
 
         // TODO: ignore messages with inst < current
         if let Some(v) = self.downstream.pop_front() {
-            Ok(Async::Ready(Some(v)))
+            Poll::Ready(Some(v))
         } else {
-            self.downstream_blocked = Some(task::current());
-            Ok(Async::NotReady)
+            self.downstream_blocked = Some(ctx.waker());
+            Poll::NotReady
         }
     }
 }
