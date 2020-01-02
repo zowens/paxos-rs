@@ -41,6 +41,7 @@ extern crate serde_derive;
 #[cfg(test)]
 extern crate test;
 extern crate tokio;
+extern crate pin_project;
 
 pub mod config;
 mod master;
