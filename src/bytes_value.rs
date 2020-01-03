@@ -23,14 +23,14 @@ impl<'de> de::Visitor<'de> for BytesValueVisitor {
     where
         E: de::Error,
     {
-        Ok(v.into())
+        Ok(Bytes::copy_from_slice(v))
     }
 
     fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
     where
         E: de::Error,
     {
-        Ok(v.into())
+        Ok(Bytes::copy_from_slice(v))
     }
 
     fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>

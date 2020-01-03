@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::task::{Poll, Waker, Context};
 use tokio::time::{Interval, interval};
 use std::pin::Pin;
+use pin_project::pin_project;
 
 /// Starting timeout for restarting Phase 1
 const RESOLUTION_STARTING_MS: u64 = 5;
@@ -17,23 +18,28 @@ const RESOLUTION_SILENCE_TIMEOUT: u64 = 5000;
 /// Periodic synchronization time
 const SYNC_TIME_MS: u64 = 5000;
 
+#[pin_project]
 enum TimerState<M: Clone> {
     Empty,
-    Scheduled(Interval, M),
+    Scheduled(#[pin] Interval, M),
     Parked(Waker),
 }
 
 impl<M: Clone> TimerState<M> {
-    fn poll_stream(&mut self, cx: &mut Context) -> Poll<()> {
-        if let TimerState::Scheduled(ref mut s, ref mut m) = *self {
-            match ready!(s.poll()) {
-                Some(_) => Poll::Ready(m.clone()),
-                None => unreachable!("Infinite stream from scheduler terminated")
+    fn poll_stream(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<M>> {
+        {
+            use self::__TimerStateProjection::*;
+            let self_pin = self.as_mut().project();
+            if let Scheduled(s, m) = self_pin {
+                match ready!(s.poll_next(cx)) {
+                    Some(_) => return Poll::Ready(Some(m.clone())),
+                    None => unreachable!("Infinite stream from scheduler terminated")
+                }
             }
-        } else {
-            *self = TimerState::Parked(cx.waker());
-            Poll::Pending
         }
+
+        self.set(TimerState::Parked(cx.waker().clone()));
+        Poll::Pending
     }
 
     fn reset(&mut self) {
@@ -58,7 +64,9 @@ impl<M: Clone> TimerState<M> {
 
 /// Timer that will resend a message to the downstream peers in order
 /// to drive consensus.
-pub(crate) struct RetransmitTimer<V: Clone> {
+#[pin_project]
+pub struct RetransmitTimer<V: Clone> {
+    #[pin]
     state: TimerState<(Instance, V)>,
 }
 
@@ -73,7 +81,7 @@ impl<V: Clone> RetransmitTimer<V>
     pub fn schedule(&mut self, inst: Instance, msg: V) {
         trace!("Scheduling retransmit");
         self.state.put_message(
-            interval(Duration::from_millis(1000)),
+            interval(Duration::from_millis(1_000)),
             (inst, msg),
         );
     }
@@ -99,14 +107,16 @@ impl<V: Clone> Stream for RetransmitTimer<V> {
     type Item = (Instance, V);
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<(Instance, V)>> {
-        unsafe { self.map_unchecked_mut(|x| &mut x.state) }.poll_stream(cx)
+        self.project().state.poll_stream(cx)
     }
 }
 
 /// Timer that allows the node to re-enter Phase 1 in order to
 /// drive resolution with a higher ballot.
+#[pin_project]
 pub(crate) struct InstanceResolutionTimer {
     backoff_ms: u64,
+    #[pin]
     state: TimerState<Instance>,
 }
 
@@ -119,8 +129,7 @@ impl InstanceResolutionTimer {
 
         // TODO: do we want to add some Jitter?
         self.state.put_message(
-            self.scheduler
-                .interval(Duration::from_millis(RESOLUTION_SILENCE_TIMEOUT)),
+                interval(Duration::from_millis(RESOLUTION_SILENCE_TIMEOUT)),
             inst,
         );
     }
@@ -133,8 +142,7 @@ impl InstanceResolutionTimer {
         let jitter_retry_ms = thread_rng().gen_range(RESOLUTION_STARTING_MS, self.backoff_ms + 1);
 
         self.state.put_message(
-            self.scheduler
-                .interval(Duration::from_millis(jitter_retry_ms)),
+                interval(Duration::from_millis(jitter_retry_ms)),
             inst,
         );
     }
@@ -167,12 +175,14 @@ impl Stream for InstanceResolutionTimer {
     type Item = Instance;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Instance>> {
-        unsafe{ self.get_unchecked_mut().state }.poll_stream()
+        self.project().state.poll_stream(cx)
     }
 }
 
 /// Timer stream for periodic synchronization with a peer.
-pub(crate) struct RandomPeerSyncTimer {
+#[pin_project]
+pub struct RandomPeerSyncTimer {
+    #[pin]
     interval: Interval,
 }
 
@@ -194,7 +204,7 @@ impl Default for RandomPeerSyncTimer {
 impl Stream for RandomPeerSyncTimer {
     type Item = ();
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
-        unsafe { self.get_unchecked_mut().interval }.poll().map(|_| ())
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<()>> {
+        self.project().interval.poll_next(cx).map(|o| o.map(|_| ()))
     }
 }

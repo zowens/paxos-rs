@@ -1,15 +1,22 @@
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
+use futures::TryFutureExt;
+use bytes::buf::BufMutExt;
 use config::Configuration;
-use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures::{Sink, Stream};
 use messages::{ClusterMessage, MultiPaxosMessage};
 use serde::Serialize;
 use serde_cbor::{de, ser};
-use std::fmt;
 use std::io;
 use std::net::SocketAddr;
-use tokio::net::{UdpFramed, UdpSocket};
+use tokio_util::udp::UdpFramed;
 use tokio::runtime::Runtime;
-use tokio_io::codec::{Decoder, Encoder};
+use tokio_util::codec::{Decoder, Encoder};
+use pin_project::pin_project;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::net::UdpSocket;
+use std::future::Future;
+use futures::stream::StreamExt;
 
 #[derive(Default)]
 struct MultiPaxosCodec;
@@ -50,25 +57,30 @@ impl Encoder for MultiPaxosCodec {
 }
 
 /// Multi-paxos node that receives and sends nodes over a network.
+#[pin_project]
 pub struct NetworkedMultiPaxos<S>
 where
-    S: Stream<Item = ClusterMessage, Error = io::Error>,
-    S: Sink<SinkItem = ClusterMessage, SinkError = io::Error>,
+    S: Stream<Item = ClusterMessage>,
+    S: Sink<ClusterMessage, Error = io::Error>,
 {
+    #[pin]
     s: S,
     config: Configuration,
 }
 
-impl<S> Sink for NetworkedMultiPaxos<S>
+impl<S> Sink<(MultiPaxosMessage, SocketAddr)> for NetworkedMultiPaxos<S>
 where
-    S: Stream<Item = ClusterMessage, Error = io::Error>,
-    S: Sink<SinkItem = ClusterMessage, SinkError = io::Error>,
+    S: Stream<Item = ClusterMessage>,
+    S: Sink<ClusterMessage, Error = io::Error>,
 {
-    type SinkItem = (MultiPaxosMessage, SocketAddr);
-    type SinkError = io::Error;
+    type Error = io::Error;
 
-    fn start_send(&mut self, msg: Self::SinkItem) -> StartSend<Self::SinkItem, io::Error> {
-        let (message, address) = msg;
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().s.poll_ready(cx)
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: (MultiPaxosMessage, SocketAddr)) -> Result<(), Self::Error> {
+        let (message, address) = item;
         let peer = match self.config.peer_id(&address) {
             Some(v) => v,
             None => {
@@ -76,44 +88,42 @@ where
                     "Received message from address, but is not in configuration: {}",
                     address
                 );
-                return Ok(AsyncSink::Ready);
+                return Ok(());
             }
         };
 
-        let send_res = self.s.start_send(ClusterMessage { peer, message })?;
-        match send_res {
-            AsyncSink::Ready => Ok(AsyncSink::Ready),
-            AsyncSink::NotReady(ClusterMessage { message, .. }) => {
-                Ok(AsyncSink::NotReady((message, address)))
-            }
-        }
+        self.project().s.start_send(ClusterMessage { peer, message })
     }
 
-    fn poll_complete(&mut self) -> Poll<(), io::Error> {
-        self.s.poll_complete()
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().s.poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().s.poll_close(cx)
     }
 }
 
 impl<S> Stream for NetworkedMultiPaxos<S>
 where
-    S: Stream<Item = ClusterMessage, Error = io::Error>,
-    S: Sink<SinkItem = ClusterMessage, SinkError = io::Error>,
+    S: Stream<Item = ClusterMessage>,
+    S: Sink<ClusterMessage, Error = io::Error>,
 {
     type Item = (MultiPaxosMessage, SocketAddr);
-    type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            match try_ready!(self.s.poll()) {
+            let self_pin = self.as_mut().project();
+            match ready!(self_pin.s.poll_next(cx)) {
                 Some(ClusterMessage { peer, message }) => {
                     if let Some(address) = self.config.address(peer) {
-                        return Ok(Async::Ready(Some((message, address))));
+                        return Poll::Ready(Some((message, address)));
                     } else {
                         warn!("Unknown peer {:?}", peer);
                     }
                 }
                 None => {
-                    return Ok(Async::Ready(None));
+                    return Poll::Ready(None);
                 }
             }
         }
@@ -122,7 +132,6 @@ where
 
 /// Server that runs a multi-paxos node over the network with UDP.
 pub struct UdpServer {
-    socket: UdpSocket,
     config: Configuration,
     runtime: Runtime,
 }
@@ -132,10 +141,8 @@ impl UdpServer {
     /// specified in the configuration.
     pub fn new(config: Configuration) -> io::Result<UdpServer> {
         let runtime = Runtime::new()?;
-        let socket = UdpSocket::bind(config.current_address())?;
 
         Ok(UdpServer {
-            socket,
             config,
             runtime,
         })
@@ -149,48 +156,47 @@ impl UdpServer {
 
     /// Runs a multi-paxos node, blocking until the program is terminated.
     pub fn run<S: Send + 'static>(
-        mut self,
+        self,
         multipaxos: S,
     ) where
-        S: Stream<Item = ClusterMessage, Error = io::Error>,
-        S: Sink<SinkItem = ClusterMessage, SinkError = io::Error>,
+        S: Stream<Item = ClusterMessage>,
+        S: Sink<ClusterMessage, Error = io::Error>,
     {
-        let multipaxos = NetworkedMultiPaxos {
-            s: multipaxos,
-            config: self.config,
-        };
-        let (sink, stream) = multipaxos.split();
+        let UdpServer { config, mut runtime } = self;
+        let current_address = config.current_address().clone();
+        let f = UdpSocket::bind(current_address).and_then(move |socket| {
+            let multipaxos = NetworkedMultiPaxos {
+                s: multipaxos,
+                config: config,
+            };
+            let (sink, stream) = multipaxos.split();
 
-        let codec: MultiPaxosCodec = MultiPaxosCodec;
-        let (net_sink, net_stream) = UdpFramed::new(self.socket, codec).split();
+            let codec: MultiPaxosCodec = MultiPaxosCodec;
+            let (net_sink, net_stream) = UdpFramed::new(socket, codec).split();
 
-        // send replies from upstream to the network
-        self.runtime.spawn(EmptyFuture(stream.forward(net_sink)));
-        // receive messages from network to upstream
-        self.runtime.spawn(EmptyFuture(net_stream.forward(sink)));
+            // send replies from upstream to the network
+            tokio::spawn(EmptyFuture(stream.map(Ok).forward(net_sink)));
 
-        self.runtime.shutdown_on_idle().wait().unwrap();
+            // receive messages from network to upstream
+            EmptyFuture(net_stream.forward(sink))
+        });
+        runtime.block_on(f).expect("Expected no errors when polling UDP socket");
     }
 }
 
-struct EmptyFuture<F>(F);
+#[pin_project]
+struct EmptyFuture<F>(#[pin] F);
 
-impl<V, E, S> Future for EmptyFuture<S>
+impl<V, S> Future for EmptyFuture<S>
 where
-    S: Future<Item = V, Error = E>,
-    E: fmt::Display,
+    S: Future<Output = V>,
 {
-    type Item = ();
-    type Error = ();
+    type Output = Result<(), io::Error>;
 
-    fn poll(&mut self) -> Poll<(), ()> {
-        match self.0.poll() {
-            Ok(Async::Ready(_)) => Ok(Async::Ready(())),
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(e) => {
-                error!("{}", e);
-                Err(())
-            }
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        match self.project().0.poll(cx) {
+            Poll::Ready(_) => Poll::Ready(Ok(())),
+            Poll::Pending => Poll::Pending
         }
     }
 }

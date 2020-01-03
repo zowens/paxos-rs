@@ -2,12 +2,12 @@ use super::Instance;
 use config::{Configuration, NodeId};
 use std::pin::Pin;
 use paxos::{Ballot, PaxosInstance};
-use std::io;
 use std::task::{Context, Poll};
-use futures::stream::Stream;
+use futures::Stream;
 use std::time::Duration;
 use timer::InstanceResolutionTimer;
-use tokio::time::Interval;
+use tokio::time::{interval, Interval};
+use pin_project::pin_project;
 
 // TODO: rename this
 
@@ -30,7 +30,7 @@ pub enum ProposalAction {
 }
 
 /// Strategy for master status.
-pub trait MasterStrategy: Stream<Item = Action, Error = io::Error> {
+pub trait MasterStrategy: Stream<Item = Action> {
     /// Forms a new instance of Paxos. Primarily this controls whether or not
     /// the proposer starts out with Phase 1 complete when it has been implicitly
     /// elected to be the distinguished proposer.
@@ -52,7 +52,9 @@ pub trait MasterStrategy: Stream<Item = Action, Error = io::Error> {
 
 /// `MasterStrategy` where no node acts as a master node. All instances must go through
 /// Phase 1 of the Paxos algorithm.
+#[pin_project]
 pub struct Masterless {
+    #[pin]
     prepare_timer: InstanceResolutionTimer,
     config: Configuration,
 }
@@ -67,7 +69,7 @@ impl Masterless {
     }
 
     #[cfg(test)]
-    pub(crate) fn prepare_timer(&self) -> &InstanceResolutionTimer<S> {
+    pub(crate) fn prepare_timer(&self) -> &InstanceResolutionTimer {
         &self.prepare_timer
     }
 }
@@ -99,8 +101,8 @@ impl Stream for Masterless {
     type Item = Action;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Action>> {
-        let timer = ready!(unsafe {self.map_unchecked(|m| m.prepare_timer()) }.poll());
-        timer.map(Action::Prepare)
+        let timer = ready!(self.project().prepare_timer.poll_next(cx));
+        Poll::Ready(timer.map(Action::Prepare))
     }
 }
 
@@ -151,15 +153,18 @@ impl Stream for Masterless {
 //            PREPARE with higher ballot
 const LEADERSHIP_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[pin_project]
 enum LeadershipState {
     /// No node is currently the master
     Leaderless {
+        #[pin]
         prepare_timer: InstanceResolutionTimer,
     },
     /// The current node is the leader
-    Leader { leadership_timeout: Interval },
+    Leader { #[pin] leadership_timeout: Interval },
     /// This node is currently the follower node
     Follower {
+        #[pin]
         leadership_timeout: Interval,
         leader_node: NodeId,
     },
@@ -169,7 +174,9 @@ enum LeadershipState {
 /// has the advantage of utilizing the previous instance's Phase 2 quorum as the implicit
 /// Phase 1 quorum for subsequent instances, which reduces the number of messages needed
 /// to reach quorum.
+#[pin_project]
 pub struct DistinguishedProposer {
+    #[pin]
     state: LeadershipState,
     config: Configuration,
 }
@@ -195,7 +202,7 @@ impl MasterStrategy for DistinguishedProposer {
             // instances >= current_inst.
             Some(ballot) if ballot.1 == self.config.current() => {
                 trace!("Current node is Distinguished Proposer");
-                let leadership_timeout = self.scheduler.interval(LEADERSHIP_TIMEOUT);
+                let leadership_timeout = interval(LEADERSHIP_TIMEOUT);
                 self.state = LeadershipState::Leader { leadership_timeout };
 
                 PaxosInstance::with_leadership(
@@ -210,7 +217,7 @@ impl MasterStrategy for DistinguishedProposer {
             Some(ballot) => {
                 let node = ballot.1;
                 trace!("Setting Distinguished Proposer to node {:?}", node);
-                let leadership_timeout = self.scheduler.interval(LEADERSHIP_TIMEOUT);
+                let leadership_timeout = interval(LEADERSHIP_TIMEOUT);
                 self.state = LeadershipState::Follower {
                     leadership_timeout,
                     leader_node: node,
@@ -228,7 +235,7 @@ impl MasterStrategy for DistinguishedProposer {
             }
             None => {
                 self.state = LeadershipState::Leaderless {
-                    prepare_timer: InstanceResolutionTimer::new(self.scheduler.clone()),
+                    prepare_timer: InstanceResolutionTimer::default(),
                 };
 
                 PaxosInstance::new(self.config.current(), self.config.quorum_size(), None, None)
@@ -244,7 +251,7 @@ impl MasterStrategy for DistinguishedProposer {
             LeadershipState::Leader { .. } => {
                 debug!("Step down as leader due to REJECT");
                 self.state = LeadershipState::Leaderless {
-                    prepare_timer: InstanceResolutionTimer::new(self.scheduler.clone()),
+                    prepare_timer: InstanceResolutionTimer::default(),
                 };
             }
             LeadershipState::Follower { .. } => {
@@ -277,26 +284,27 @@ impl Stream for DistinguishedProposer {
     type Item = Action;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Action>> {
+        use self::__LeadershipStateProjection::*;
         loop {
-            let step_down = match self.state {
-                LeadershipState::Leaderless {
+            let step_down = match self.project().state.project() {
+                Leaderless {
                     ref mut prepare_timer,
                 } => {
-                    let prepare = ready!(prepare_timer.poll());
+                    let prepare = ready!(prepare_timer.poll_next(cx));
                     return Poll::Ready(prepare.map(Action::Prepare));
                 }
-                LeadershipState::Leader {
+                Leader {
                     ref mut leadership_timeout,
                 } => {
-                    ready!(leadership_timeout.poll());
+                    ready!(leadership_timeout.poll_next(cx));
                     trace!("Stepping down as leader due to timeout");
                     true
                 }
-                LeadershipState::Follower {
+                Follower {
                     ref mut leadership_timeout,
                     leader_node,
                 } => {
-                    ready!(leadership_timeout.poll());
+                    ready!(leadership_timeout.poll_next(cx));
                     trace!(
                         "Revoking distinguished proposer status from {} due to timeout",
                         leader_node
@@ -306,7 +314,7 @@ impl Stream for DistinguishedProposer {
             };
 
             self.state = LeadershipState::Leaderless {
-                prepare_timer: InstanceResolutionTimer::new(self.scheduler.clone()),
+                prepare_timer: InstanceResolutionTimer::default(),
             };
 
             if step_down {
