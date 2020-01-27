@@ -457,7 +457,6 @@ impl<R: ReplicatedState, M: MasterStrategy> Sink<ClusterMessage> for MultiPaxos<
     }
 }
 
-#[inline]
 fn from_poll<V>(s: Poll<Option<V>>) -> Option<V> {
     match s {
         Poll::Ready(Some(v)) => Some(v),
@@ -469,36 +468,61 @@ impl<R: ReplicatedState, M: MasterStrategy> Stream for MultiPaxos<R, M> {
     type Item = ClusterMessage;
 
     fn poll_next(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Option<ClusterMessage>> {
-        let mut self_pin = { self.as_mut().project() };
-
         // poll for retransmission
-        while let Some((inst, msg)) = from_poll(self_pin.retransmit_timer.as_mut().poll_next(ctx)) {
-            self.poll_retransmit(inst, msg);
+        let mut self_pin = self.as_mut();
+        loop {
+            let retransmit = {
+                let mut project = self_pin.as_mut().project();
+                from_poll(project.retransmit_timer.as_mut().poll_next(ctx))
+            };
+            match retransmit {
+                Some((inst, msg)) => unsafe { self_pin.as_mut().get_unchecked_mut() }.poll_retransmit(inst, msg),
+                None => break,
+            }
         }
 
         // poll for master-related actions
-        while let Some(action) = from_poll(self_pin.master_strategy.poll_next(ctx)) {
-            match action {
-                Action::Prepare(inst) => self.poll_restart_prepare(inst),
-                Action::RelasePhaseOneQuorum => self.paxos.revoke_leadership(),
+        loop {
+            let master_action = {
+                let project = self_pin.as_mut().project();
+                from_poll(project.master_strategy.poll_next(ctx))
+            };
+            match master_action {
+                Some(Action::Prepare(inst)) => unsafe { self_pin.as_mut().get_unchecked_mut() }.poll_restart_prepare(inst),
+                Some(Action::RelasePhaseOneQuorum) => unsafe { self_pin.as_mut().get_unchecked_mut() }.paxos.revoke_leadership(),
+                None => break,
             }
         }
 
         // poll for sync
-        while from_poll(self_pin.sync_timer.poll_next(ctx)).is_some() {
-            self.poll_syncronization();
+        loop {
+            let syncro = {
+                let project = self_pin.as_mut().project();
+                from_poll(project.sync_timer.poll_next(ctx))
+            };
+            match syncro {
+                Some(_) => unsafe { self_pin.as_mut().get_unchecked_mut() }.poll_syncronization(),
+                None => break,
+            }
         }
 
         // poll for proposals
-        while let Some(value) = from_poll(self_pin.proposal_receiver.poll_next(ctx)) {
-            self.propose_update(value);
+        loop {
+            let proposal = {
+                let project = self_pin.as_mut().project();
+                from_poll(project.proposal_receiver.poll_next(ctx))
+            };
+            match proposal {
+                Some(value) => unsafe { self_pin.as_mut().get_unchecked_mut() }.propose_update(value),
+                None => break,
+            }
         }
 
         // TODO: ignore messages with inst < current
-        if let Some(v) = self.downstream.pop_front() {
+        if let Some(v) = unsafe { self_pin.as_mut().get_unchecked_mut() }.downstream.pop_front() {
             Poll::Ready(Some(v))
         } else {
-            self.downstream_blocked = Some(ctx.waker().clone());
+            unsafe { self_pin.as_mut().get_unchecked_mut() }.downstream_blocked = Some(ctx.waker().clone());
             Poll::Pending
         }
     }

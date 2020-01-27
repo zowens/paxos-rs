@@ -283,28 +283,29 @@ impl MasterStrategy for DistinguishedProposer {
 impl Stream for DistinguishedProposer {
     type Item = Action;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Action>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Action>> {
         use self::__LeadershipStateProjection::*;
         loop {
-            let step_down = match self.project().state.project() {
+            let project = self.as_mut().project();
+            let step_down = match project.state.project() {
                 Leaderless {
                     ref mut prepare_timer,
                 } => {
-                    let prepare = ready!(prepare_timer.poll_next(cx));
+                    let prepare = ready!(prepare_timer.as_mut().poll_next(cx));
                     return Poll::Ready(prepare.map(Action::Prepare));
                 }
                 Leader {
                     ref mut leadership_timeout,
                 } => {
-                    ready!(leadership_timeout.poll_next(cx));
+                    ready!(leadership_timeout.as_mut().poll_next(cx));
                     trace!("Stepping down as leader due to timeout");
                     true
                 }
                 Follower {
                     ref mut leadership_timeout,
-                    leader_node,
+                    ref leader_node,
                 } => {
-                    ready!(leadership_timeout.poll_next(cx));
+                    ready!(leadership_timeout.as_mut().poll_next(cx));
                     trace!(
                         "Revoking distinguished proposer status from {} due to timeout",
                         leader_node
