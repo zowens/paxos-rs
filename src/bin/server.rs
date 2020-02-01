@@ -1,22 +1,21 @@
 extern crate env_logger;
 extern crate futures;
+extern crate log;
 extern crate paxos;
 extern crate tokio;
-extern crate tokio_codec;
-extern crate tokio_io;
 
-use futures::{Future, Stream};
+use bytes::Bytes;
+use log::{debug, error};
 use paxos::{
-    Configuration, MultiPaxosBuilder, ProposalSender, Register, ReplicatedState,
-    UdpServer,
+    Configuration, MultiPaxosBuilder, ProposalSender, Register, ReplicatedState, UdpServer,
 };
-use std::borrow::Borrow;
 use std::env::args;
+use std::io;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
-use std::str;
-use tokio::net::TcpListener;
-use tokio_codec::{Decoder, LinesCodec};
+use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::spawn;
 
 fn local_config(node: u16) -> (Configuration, SocketAddr) {
     assert!(node < 3);
@@ -30,9 +29,47 @@ fn local_config(node: u16) -> (Configuration, SocketAddr) {
     (Configuration::new(current, others), client_addr)
 }
 
-enum Command {
-    Get,
-    Propose,
+async fn client_handler(
+    stream: TcpStream,
+    register: Register,
+    proposals: ProposalSender,
+) -> io::Result<()> {
+    let (read, mut write) = split(stream);
+    let mut lines = BufReader::new(read).lines();
+
+    loop {
+        match lines.next_line().await {
+            Ok(None) => {
+                debug!("No line added");
+                continue;
+            }
+            Ok(Some(s)) if s.starts_with("get") => {
+                let output = match register.snapshot(0) {
+                    Some(v) => v,
+                    None => Bytes::from_static("ERR: No Value".as_bytes()),
+                };
+                write.write_all(&output).await?;
+            }
+            Ok(Some(s)) if s.starts_with("propose") => {
+                let val = match proposals.propose(s.into()) {
+                    Ok(_) => "OK",
+                    Err(_) => "ERR: Error adding proposal",
+                };
+                write.write_all(val.as_bytes()).await?;
+            }
+            Ok(Some(s)) => {
+                let err_str = format!("ERR: invalid command {}", s);
+                write.write_all(err_str.as_bytes()).await?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                return Ok(());
+            }
+            Err(e) => {
+                error!("ERROR: {}", e);
+                return Err(e);
+            }
+        }
+    }
 }
 
 /// Allow clients to send messages to issue commands to the node:
@@ -40,57 +77,24 @@ enum Command {
 /// Examples:
 /// * `get`
 /// * `propose hello world`
-fn client_handler(
+async fn tcp_listener(
     register: Register,
     addr: SocketAddr,
     proposals: ProposalSender,
-) -> impl Future<Item = (), Error = ()> {
-    let socket = TcpListener::bind(&addr).unwrap();
+) -> io::Result<()> {
+    let mut listener = TcpListener::bind(&addr).await?;
 
-    let server = socket.incoming().for_each(move |socket| {
+    loop {
+        let (socket, _) = listener.accept().await?;
+
         let register = register.clone();
         let proposals = proposals.clone();
-
-        let (sink, stream) = LinesCodec::new().framed(socket).split();
-        let client_future = stream
-            .map(move |mut req| {
-                let proposals = proposals.clone();
-                let cmd = {
-                    req.split_whitespace().next().and_then(|cmd| match cmd {
-                        "get" => Some(Command::Get),
-                        "propose" => Some(Command::Propose),
-                        _ => None,
-                    })
-                };
-
-                match cmd {
-                    Some(Command::Get) => match register.snapshot(0) {
-                        Some(v) => {
-                            let v: &[u8] = v.borrow();
-                            str::from_utf8(v)
-                                .map(|v| v.to_string())
-                                .unwrap_or_else(|_| "ERR: Value not UTF-8".to_string())
-                        }
-                        None => "ERR: No Value".to_string(),
-                    },
-                    Some(Command::Propose) => {
-                        let value = req.split_off(8).into();
-                        proposals
-                            .propose(value)
-                            .map(|_| "OK".to_string())
-                            .unwrap_or_else(|_| "ERR: Unable to propose".to_string())
-                    }
-                    None => "ERR: Invalid command".to_string(),
-                }
-            })
-            .forward(sink);
-        client_future.map(|_| ())
-    });
-
-    server.map_err(|_| ())
+        spawn(async move { client_handler(socket, register, proposals).await });
+    }
 }
 
-pub fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let (config, client_addr) = match args().nth(1) {
@@ -108,6 +112,7 @@ pub fn main() {
         .build();
     server
         .runtime_mut()
-        .spawn(client_handler(register, client_addr, proposal_sink));
+        .spawn(tcp_listener(register, client_addr, proposal_sink));
     server.run(multi_paxos);
+    Ok(())
 }
