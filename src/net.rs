@@ -1,9 +1,9 @@
 use bytes::BytesMut;
 use futures::TryFutureExt;
 use bytes::buf::BufMutExt;
-use config::Configuration;
+use crate::config::Configuration;
 use futures::{Sink, Stream};
-use messages::{ClusterMessage, MultiPaxosMessage};
+use crate::messages::{ClusterMessage, MultiPaxosMessage};
 use serde::Serialize;
 use serde_cbor::{de, ser};
 use std::io;

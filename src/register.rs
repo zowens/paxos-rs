@@ -1,5 +1,5 @@
 use super::Instance;
-use statemachine::ReplicatedState;
+use crate::statemachine::ReplicatedState;
 use std::sync::{Arc, RwLock};
 use bytes::Bytes;
 

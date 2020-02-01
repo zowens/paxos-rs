@@ -1,11 +1,11 @@
 use super::Instance;
-use config::{Configuration, NodeId};
+use crate::config::{Configuration, NodeId};
 use std::pin::Pin;
-use paxos::{Ballot, PaxosInstance};
+use crate::paxos::{Ballot, PaxosInstance};
 use std::task::{Context, Poll};
 use futures::Stream;
 use std::time::Duration;
-use timer::InstanceResolutionTimer;
+use crate::timer::InstanceResolutionTimer;
 use tokio::time::{interval, Interval};
 use pin_project::pin_project;
 

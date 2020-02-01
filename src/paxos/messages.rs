@@ -11,14 +11,14 @@ pub struct Prepare(pub Ballot);
 /// to acceptors to accept a value. The `ACCEPT` message is predicated
 /// on the proposer receiving quorum from Phase 1.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
-pub struct Accept(pub Ballot, #[serde(with="::bytes_value")] pub Bytes);
+pub struct Accept(pub Ballot, #[serde(with="crate::bytes_value")] pub Bytes);
 
 /// Either of the proposer message values.
 pub type ProposerMsg = Either<Prepare, Accept>;
 
 /// Pair containing the promised Ballot value and the bytes of the value.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
-pub struct PromiseValue(pub Ballot, #[serde(with="::bytes_value")] pub Bytes);
+pub struct PromiseValue(pub Ballot, #[serde(with="crate::bytes_value")] pub Bytes);
 
 /// `PROMISE` is the Phase 1b message sent from acceptors in reply to
 /// `PREPARE` messages. The ballot in the promise denotes that the acceptor
@@ -58,11 +58,11 @@ impl Reject {
 /// `ACCEPTED` is the Phase 2b message that is broadcast from acceptors
 /// denoting acceptance of a value.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
-pub struct Accepted(pub Ballot, #[serde(with="::bytes_value")] pub Bytes);
+pub struct Accepted(pub Ballot, #[serde(with="crate::bytes_value")] pub Bytes);
 
 /// `RESOLUTION` is the result of a quorum of `ACCEPTED` messages being received.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
-pub struct Resolution(pub Ballot, #[serde(with="::bytes_value")] pub Bytes);
+pub struct Resolution(pub Ballot, #[serde(with="crate::bytes_value")] pub Bytes);
 
 /// Struct containing the node and message for a single destination.
 #[derive(PartialEq, Eq, Clone, Debug)]

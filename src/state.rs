@@ -1,5 +1,5 @@
 use super::Instance;
-use paxos::Ballot;
+use crate::paxos::Ballot;
 use bytes::Bytes;
 
 pub struct State {

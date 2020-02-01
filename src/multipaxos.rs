@@ -1,20 +1,20 @@
 use super::Instance;
-use config::*;
 use either::Either;
 use futures::Stream;
 use std::task::{Poll, Context, Waker};
 use std::pin::Pin;
 use pin_project::pin_project;
 use futures::sink::Sink;
-use master::*;
-use messages::*;
-use paxos::*;
-use proposals::*;
-use state::*;
-use statemachine::*;
+use crate::master::*;
+use crate::config::*;
+use crate::messages::*;
+use crate::paxos::*;
+use crate::proposals::*;
+use crate::state::*;
+use crate::statemachine::*;
 use std::collections::VecDeque;
 use std::io;
-use timer::*;
+use crate::timer::*;
 use bytes::Bytes;
 
 /// `MultiPaxos` receives messages and attempts to receive consensus on a replicated

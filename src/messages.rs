@@ -1,7 +1,7 @@
 //! Messages sent within the cluster of nodes.
 use super::Instance;
-use config::NodeId;
-use paxos::{Accept, Accepted, Prepare, Promise, Reject};
+use crate::config::NodeId;
+use crate::paxos::{Accept, Accepted, Prepare, Promise, Reject};
 use bytes::Bytes;
 
 // TODO: convert MultiPaxosMessage to struct-enum
@@ -37,10 +37,10 @@ pub enum MultiPaxosMessage {
     Sync(Instance),
 
     /// Response to a sync request from another peer
-    Catchup(Instance, #[serde(with="::bytes_value")]Bytes),
+    Catchup(Instance, #[serde(with="crate::bytes_value")]Bytes),
 
     /// Redirects a proposal from one node to the Distinguished Proposer
-    RedirectProposal(#[serde(with="::bytes_value")]Bytes),
+    RedirectProposal(#[serde(with="crate::bytes_value")]Bytes),
 }
 
 /// Message sent to a peer node in the cluster.
