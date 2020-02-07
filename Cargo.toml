@@ -8,7 +8,7 @@ log = "0.4"
 rand = { version = "0.7", features = ["small_rng"] }
 tokio = "0.1"
 tokio-codec = "0.1"
-futures = "0.1.17"
+futures = "0.3.4"
 env_logger = "0.7"
 tokio-timer = "0.2"
 clap = "2.33.0"
