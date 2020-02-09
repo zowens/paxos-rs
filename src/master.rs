@@ -67,11 +67,6 @@ impl Masterless {
             config,
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn prepare_timer(&self) -> &InstanceResolutionTimer {
-        &self.prepare_timer
-    }
 }
 
 impl MasterStrategy for Masterless {

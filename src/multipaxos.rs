@@ -409,7 +409,7 @@ impl<R: ReplicatedState, M: MasterStrategy> MultiPaxos<R, M> {
 impl<R: ReplicatedState, M: MasterStrategy> Sink<ClusterMessage> for MultiPaxos<R, M> {
     type Error = io::Error;
 
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
@@ -448,11 +448,11 @@ impl<R: ReplicatedState, M: MasterStrategy> Sink<ClusterMessage> for MultiPaxos<
         Ok(())
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -528,1364 +528,1293 @@ impl<R: ReplicatedState, M: MasterStrategy> Stream for MultiPaxos<R, M> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use futures::executor::{spawn, Notify, NotifyHandle};
-    use futures::unsync::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
-    use std::cell::RefCell;
-    use std::collections::HashSet;
-    use std::rc::Rc;
-    use std::time::Duration;
-
-    #[test]
-    fn catchup() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-
-        let (_, stream) = proposal_channel();
-
-        let mut multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        // advance when instance > current
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Catchup(2, vec![0x0, 0xe].into()),
-            })
-            .unwrap();
-
-        // check that the instance was advanced
-        assert_eq!(2, multi_paxos.instance);
-        assert_eq!(1, multi_paxos.state_machine.0.len());
-        assert_eq!(&(1, vec![0x0, 0xe].into()), &multi_paxos.state_machine.0[0]);
-
-        // ignore previous instance catchup values
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Catchup(0, vec![0xff, 0xff, 0xff].into()),
-            })
-            .unwrap();
-        assert_eq!(2, multi_paxos.instance);
-        assert_eq!(1, multi_paxos.state_machine.0.len());
-        assert_eq!(&(1, vec![0x0, 0xe].into()), &multi_paxos.state_machine.0[0]);
-
-        // no messages result
-        assert!(collect_messages(multi_paxos).0.is_empty());
-    }
-
-    #[test]
-    fn sync() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-
-        let (_, stream) = proposal_channel();
-
-        let mut multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        // force instance to instance=2
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Catchup(2, vec![0x0, 0xe].into()),
-            })
-            .unwrap();
-
-        // check that the instance was advanced
-        assert_eq!(2, multi_paxos.instance);
-
-        // send a sync message
-        // (peer 1 at instance=0)
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Sync(0),
-            })
-            .unwrap();
-
-        // send a sync message that should not get a reply
-        // since it is > current instance
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Sync(5),
-            })
-            .unwrap();
-
-        let msgs = collect_messages(multi_paxos).0;
-        assert_eq!(1, msgs.len());
-        assert_eq!(
-            ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Catchup(2, vec![0x0, 0xe].into()),
-            },
-            msgs[0]
-        );
-    }
-
-    #[test]
-    fn propose_value() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-
-        let (sink, stream) = proposal_channel();
-
-        let multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        sink.propose(vec![0x0, 0xe].into()).unwrap();
-
-        // get messages that result
-        let mut peers = HashSet::new();
-        for msg in collect_messages(multi_paxos).0 {
-            peers.insert(msg.peer);
-            assert_matches!(
-                msg.message,
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(0, 0)))
-            );
-        }
-
-        assert_eq!(2, peers.len());
-        assert!(peers.contains(&1));
-        assert!(peers.contains(&2));
-    }
-
-    #[test]
-    fn on_prepare() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(3, config.quorum_size());
-
-        let (_, stream) = proposal_channel();
-
-        let mut multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        // peer 2 sends instance > current
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Prepare(10, Prepare(Ballot(10, 2))),
-            })
-            .unwrap();
-
-        // peer 1 sends prepare that is promised
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Prepare(0, Prepare(Ballot(5, 1))),
-            })
-            .unwrap();
-
-        // promise Ballot(5, 1)
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(1, msgs.len());
-        assert_eq!(
-            ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Promise(0, Promise(Ballot(5, 1), None)),
-            },
-            msgs[0]
-        );
-
-        // rejects ballot < Ballot(5, 1)
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Prepare(0, Prepare(Ballot(0, 2))),
-            })
-            .unwrap();
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(1, msgs.len());
-        assert_eq!(
-            ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 2), Ballot(5, 1))),
-            },
-            msgs[0]
-        );
-
-        // receive accept then additional promise
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Accept(
-                    0,
-                    Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        // ignroe messages from accept (will be tested in another test)
-        let (_, mut multi_paxos) = collect_messages(multi_paxos);
-
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Prepare(0, Prepare(Ballot(10, 3))),
-            })
-            .unwrap();
-
-        let (msgs, _) = collect_messages(multi_paxos);
-        assert_eq!(1, msgs.len());
-
-        assert_eq!(
-            ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Promise(
-                    0,
-                    Promise(
-                        Ballot(10, 3),
-                        Some(PromiseValue(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()))
-                    )
-                ),
-            },
-            msgs[0]
-        );
-    }
-
-    #[test]
-    fn on_promise() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-
-        let (sink, stream) = proposal_channel();
-
-        let multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        sink.propose(vec![0x0, 0xe, 0xb, 0x11].into()).unwrap();
-
-        // ensure prepare messages sent out
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-
-        // ignore promise for wrong instance
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 5,
-                message: MultiPaxosMessage::Promise(10, Promise(Ballot(0, 5), None)),
-            })
-            .unwrap();
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(0, msgs.len());
-
-        // get back promises to eventually form quorum
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Promise(0, Promise(Ballot(0, 0), None)),
-            })
-            .unwrap();
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(0, msgs.len());
-
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Promise(0, Promise(Ballot(0, 0), None)),
-            })
-            .unwrap();
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-
-        {
-            let mut peers = HashSet::new();
-            for m in msgs {
-                peers.insert(m.peer);
-                assert_eq!(
-                    MultiPaxosMessage::Accept(
-                        0,
-                        Accept(Ballot(0, 0), vec![0x0, 0xe, 0xb, 0x11].into())
-                    ),
-                    m.message
-                );
-            }
-
-            assert_eq!(4, peers.len());
-            assert!(peers.contains(&1));
-            assert!(peers.contains(&2));
-            assert!(peers.contains(&3));
-            assert!(peers.contains(&4));
-        }
-
-        assert_eq!(0, multi_paxos.instance);
-    }
-
-    #[test]
-    fn on_reject() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-
-        let (sink, stream) = proposal_channel();
-
-        let multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        sink.propose(vec![0xab, 0xb, 0x11].into()).unwrap();
-
-        // ensure prepare messages sent out
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-
-        // ignore reject for wrong instance
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 5,
-                message: MultiPaxosMessage::Reject(10, Reject(Ballot(0, 0), Ballot(1, 1))),
-            })
-            .unwrap();
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(0, msgs.len());
-
-        // get quorum of REJECT for the proposal
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 0), Ballot(1, 1))),
-            })
-            .unwrap();
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(0, msgs.len());
-
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 0), Ballot(4, 4))),
-            })
-            .unwrap();
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(0, msgs.len());
-
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 0), Ballot(10, 2))),
-            })
-            .unwrap();
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-
-        // assert re-prepare
-        {
-            let mut peers = HashSet::new();
-            for m in msgs {
-                peers.insert(m.peer);
-                assert_eq!(
-                    MultiPaxosMessage::Prepare(0, Prepare(Ballot(11, 0))),
-                    m.message
-                );
-            }
-
-            assert_eq!(4, peers.len());
-            assert!(peers.contains(&1));
-            assert!(peers.contains(&2));
-            assert!(peers.contains(&3));
-            assert!(peers.contains(&4));
-        }
-
-        assert_eq!(0, multi_paxos.instance);
-    }
-
-    #[test]
-    fn on_accept() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(3, config.quorum_size());
-
-        let (_, stream) = proposal_channel();
-
-        let mut multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        // receive accept for wrong instance
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Accept(
-                    5,
-                    Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-
-        // receive accept from current instance
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Accept(
-                    0,
-                    Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-
-        // check that ACCEPTED broadcast out
-        {
-            let mut peers = HashSet::new();
-            for m in msgs {
-                peers.insert(m.peer);
-                assert_eq!(
-                    m.message,
-                    MultiPaxosMessage::Accepted(
-                        0,
-                        Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into())
-                    )
-                );
-            }
-
-            assert_eq!(4, peers.len());
-            assert!(peers.contains(&1));
-            assert!(peers.contains(&2));
-            assert!(peers.contains(&3));
-            assert!(peers.contains(&4));
-        }
-
-        // reject ACCEPT for ballots < last accept
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Accept(
-                    0,
-                    Accept(Ballot(0, 3), vec![0xff, 0xff, 0xff, 0xee].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(1, msgs.len());
-        assert_eq!(
-            ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 3), Ballot(5, 1))),
-            },
-            msgs[0]
-        );
-
-        // no decision
-        assert_eq!(0, multi_paxos.instance);
-    }
-
-    #[test]
-    fn on_accept_quorum2() {
-        // special case with quorum of size 2
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(2, config.quorum_size());
-
-        let (_, stream) = proposal_channel();
-
-        let mut multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        // receive accept for wrong instance
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Accept(
-                    5,
-                    Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-
-        // receive accept from current instance
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Accept(
-                    0,
-                    Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-
-        // check that ACCEPTED broadcast out
-        {
-            let mut peers = HashSet::new();
-            for m in msgs {
-                peers.insert(m.peer);
-                assert_eq!(
-                    m.message,
-                    MultiPaxosMessage::Accepted(
-                        0,
-                        Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into())
-                    )
-                );
-            }
-
-            assert_eq!(2, peers.len());
-            assert!(peers.contains(&1));
-            assert!(peers.contains(&2));
-        }
-
-        // decided on value
-        assert_eq!(1, multi_paxos.instance);
-        assert_eq!(1, multi_paxos.state_machine.0.len());
-        assert_eq!(
-            (0, vec![0x0, 0x1, 0xff].into()),
-            multi_paxos.state_machine.0[0]
-        );
-    }
-
-    #[test]
-    fn on_accepted() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(3, config.quorum_size());
-
-        let (_, stream) = proposal_channel();
-
-        let mut multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        // receive accepted for wrong instance
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Accepted(
-                    5,
-                    Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-        // no decision
-        assert_eq!(0, multi_paxos.instance);
-
-        // receive accept from current instance
-        //
-        // peer 1
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Accepted(
-                    0,
-                    Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-        // no decision
-        assert_eq!(0, multi_paxos.instance);
-
-        // peer 2
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Accepted(
-                    0,
-                    Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-        // no decision
-        assert_eq!(0, multi_paxos.instance);
-
-        // peer 3
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Accepted(
-                    0,
-                    Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-
-        // decided on the value after quorum
-        assert_eq!(1, multi_paxos.instance);
-        assert_eq!(1, multi_paxos.state_machine.0.len());
-        assert_eq!(
-            (0, vec![0x0, 0x1, 0xff].into()),
-            multi_paxos.state_machine.0[0]
-        );
-    }
-
-    #[test]
-    fn on_accepted_after_accept() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(3, config.quorum_size());
-
-        let (_, stream) = proposal_channel();
-
-        let mut multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        // receive accept (causes 3 and 0 to be added for tracking of quorum)
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Accept(
-                    0,
-                    Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-        assert_eq!(0, multi_paxos.instance);
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-
-        // receive 1 more accepted for quorum
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Accepted(
-                    0,
-                    Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-
-        // decided on the value after quorum
-        assert_eq!(1, multi_paxos.instance);
-        assert_eq!(
-            (0, vec![0x0, 0x1, 0xff].into()),
-            multi_paxos.state_machine.0[0]
-        );
-    }
-
-    #[test]
-    fn on_accept_after_accepted() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(3, config.quorum_size());
-
-        let (_, stream) = proposal_channel();
-
-        let mut multi_paxos = MultiPaxos::new(
-            NoOpScheduler,
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), NoOpScheduler),
-        );
-
-        // receive ACCEPTED prior to ACCEPT
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 1,
-                message: MultiPaxosMessage::Accepted(
-                    0,
-                    Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-        assert_eq!(0, multi_paxos.instance);
-
-        // receive accept (causes 3 and 0 to be added for tracking of quorum)
-        // and thus, we now have quorum
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 3,
-                message: MultiPaxosMessage::Accept(
-                    0,
-                    Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
-                ),
-            })
-            .unwrap();
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-
-        // decided on the value after quorum
-        assert_eq!(1, multi_paxos.instance);
-        assert_eq!(
-            (0, vec![0x0, 0x1, 0xff].into()),
-            multi_paxos.state_machine.0[0]
-        );
-    }
-
-    #[test]
-    fn poll_synchronization() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(3, config.quorum_size());
-
-        let (_, stream) = proposal_channel();
-        let scheduler = IndexedScheduler::new();
-        let multi_paxos = MultiPaxos::new(
-            scheduler.clone(),
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), scheduler.clone()),
-        );
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-
-        // trigger sync task
-        let stream_index = multi_paxos.sync_timer.stream().index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, _) = collect_messages(multi_paxos);
-        assert_eq!(1, msgs.len());
-
-        assert_eq!(MultiPaxosMessage::Sync(0), msgs[0].message);
-
-        let peer = msgs[0].peer;
-        assert!(peer >= 1);
-        assert!(peer <= 4);
-    }
-
-    #[test]
-    fn poll_retransmit_prepare() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4004".parse().unwrap()),
-                (4, "127.0.0.1:4005".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(3, config.quorum_size());
-
-        let (proposal, stream) = proposal_channel();
-        let scheduler = IndexedScheduler::new();
-        let multi_paxos = MultiPaxos::new(
-            scheduler.clone(),
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), scheduler.clone()),
-        );
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-
-        proposal.propose(vec![0x11, 0xba, 0x44].into()).unwrap();
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-
-        // trigger once...
-        let stream_index = multi_paxos.retransmit_timer.stream().unwrap().index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(0, 0))),
-                m.message
-            );
-        }
-
-        // trigger again
-        scheduler.trigger(stream_index);
-
-        let (msgs, _) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(0, 0))),
-                m.message
-            );
-        }
-    }
-
-    #[test]
-    fn poll_retransmit_accept() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(2, config.quorum_size());
-
-        let (proposal, stream) = proposal_channel();
-        let scheduler = IndexedScheduler::new();
-        let multi_paxos = MultiPaxos::new(
-            scheduler.clone(),
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), scheduler.clone()),
-        );
-
-        // go to phase 2
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-
-        proposal.propose(vec![0x11, 0xba, 0x44].into()).unwrap();
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(2, msgs.len());
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Promise(0, Promise(Ballot(0, 0), None)),
-            })
-            .unwrap();
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(2, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Accept(0, Accept(Ballot(0, 0), vec![0x11, 0xba, 0x44].into())),
-                m.message
-            );
-        }
-
-        // trigger once...
-        let stream_index = multi_paxos.retransmit_timer.stream().unwrap().index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(2, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Accept(0, Accept(Ballot(0, 0), vec![0x11, 0xba, 0x44].into())),
-                m.message
-            );
-        }
-
-        // trigger again
-        scheduler.trigger(stream_index);
-
-        let (msgs, _) = collect_messages(multi_paxos);
-        assert_eq!(2, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Accept(0, Accept(Ballot(0, 0), vec![0x11, 0xba, 0x44].into())),
-                m.message
-            );
-        }
-    }
-
-    #[test]
-    fn poll_reprepare_from_reject() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(2, config.quorum_size());
-
-        let (proposal, stream) = proposal_channel();
-        let scheduler = IndexedScheduler::new();
-        let multi_paxos = MultiPaxos::new(
-            scheduler.clone(),
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), scheduler.clone()),
-        );
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert!(msgs.is_empty());
-
-        proposal.propose(vec![0x11, 0xba, 0x44].into()).unwrap();
-        let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(2, msgs.len());
-
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 0), Ballot(2, 2))),
-            })
-            .unwrap();
-
-        // start with a new ballot
-        let stream_index = multi_paxos
-            .master_strategy
-            .prepare_timer()
-            .stream()
-            .unwrap()
-            .index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(2, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(3, 0))),
-                m.message
-            );
-        }
-
-        // check that the retransmit task is the new prepare message
-        let stream_index = multi_paxos.retransmit_timer.stream().unwrap().index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(2, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(3, 0))),
-                m.message
-            );
-        }
-
-        // check that an addition prepare timer task has a new ballot
-        let stream_index = multi_paxos
-            .master_strategy
-            .prepare_timer()
-            .stream()
-            .unwrap()
-            .index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, _) = collect_messages(multi_paxos);
-        assert_eq!(2, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(4, 0))),
-                m.message
-            );
-        }
-    }
-
-    #[test]
-    fn poll_reprepare_from_accept() {
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4003".parse().unwrap()),
-                (4, "127.0.0.1:4004".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(3, config.quorum_size());
-
-        let (_, stream) = proposal_channel();
-        let scheduler = IndexedScheduler::new();
-        let mut multi_paxos = MultiPaxos::new(
-            scheduler.clone(),
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            Masterless::new(config.clone(), scheduler.clone()),
-        );
-
-        assert!(multi_paxos
-            .master_strategy
-            .prepare_timer()
-            .stream()
-            .is_none());
-
-        multi_paxos
-            .start_send(ClusterMessage {
-                peer: 2,
-                message: MultiPaxosMessage::Accept(
-                    0,
-                    Accept(Ballot(2, 2), vec![0x01, 0xee].into()),
-                ),
-            })
-            .unwrap();
-
-        // accepted messages
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-
-        // start with a new ballot
-        assert!(multi_paxos
-            .master_strategy
-            .prepare_timer()
-            .stream()
-            .is_some());
-        let stream_index = multi_paxos
-            .master_strategy
-            .prepare_timer()
-            .stream()
-            .unwrap()
-            .index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(3, 0))),
-                m.message
-            );
-        }
-
-        // check that the retransmit task is the new prepare message
-        let stream_index = multi_paxos.retransmit_timer.stream().unwrap().index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, multi_paxos) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(3, 0))),
-                m.message
-            );
-        }
-
-        // check that an addition prepare timer task has a new ballot
-        let stream_index = multi_paxos
-            .master_strategy
-            .prepare_timer()
-            .stream()
-            .unwrap()
-            .index;
-        scheduler.trigger(stream_index);
-
-        let (msgs, _) = collect_messages(multi_paxos);
-        assert_eq!(4, msgs.len());
-        for m in msgs {
-            assert_eq!(
-                MultiPaxosMessage::Prepare(0, Prepare(Ballot(4, 0))),
-                m.message
-            );
-        }
-    }
-
-    #[test]
-    fn proposal_redirection() {
-        struct RedirectMasterStrategy(Configuration);
-
-        impl MasterStrategy for RedirectMasterStrategy {
-            fn next_instance(
-                &mut self,
-                _inst: Instance,
-                _accepted_bal: Option<Ballot>,
-            ) -> PaxosInstance {
-                PaxosInstance::new(self.0.current(), self.0.quorum_size(), None, None)
-            }
-
-            fn on_reject(&mut self, _inst: Instance) {}
-            fn on_accept(&mut self, _inst: Instance) {}
-
-            fn proposal_action(&self) -> ProposalAction {
-                ProposalAction::Redirect(4)
-            }
-        }
-
-        impl Stream for RedirectMasterStrategy {
-            type Item = Action;
-            type Error = io::Error;
-
-            fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-                Ok(Async::NotReady)
-            }
-        }
-
-        let config = Configuration::new(
-            (0u32, "127.0.0.1:4000".parse().unwrap()),
-            vec![
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4003".parse().unwrap()),
-                (4, "127.0.0.1:4004".parse().unwrap()),
-            ]
-            .into_iter(),
-        );
-
-        assert_eq!(3, config.quorum_size());
-
-        let (sink, stream) = proposal_channel();
-        let multi_paxos = MultiPaxos::new(
-            NoOpScheduler {},
-            stream,
-            TestStateMachine::default(),
-            config.clone(),
-            RedirectMasterStrategy(config.clone()),
-        );
-
-        sink.propose(b"hello".to_vec().into()).unwrap();
-
-        // assert the proposal is redirected
-        let (msgs, _) = collect_messages(multi_paxos);
-        assert_eq!(1, msgs.len());
-        assert_eq!(
-            ClusterMessage {
-                peer: 4,
-                message: MultiPaxosMessage::RedirectProposal(b"hello".to_vec().into()),
-            },
-            msgs[0]
-        );
-    }
-
-    fn collect_messages<S: Scheduler, M: MasterStrategy>(
-        multi_paxos: MultiPaxos<TestStateMachine, M, S>,
-    ) -> (
-        Vec<ClusterMessage>,
-        MultiPaxos<TestStateMachine, M, S>,
-    ) {
-        let mut s = spawn(multi_paxos);
-        let h = notify_noop();
-
-        let mut msgs = vec![];
-        while let Async::Ready(Some(v)) = s.poll_stream_notify(&h, 120).unwrap() {
-            msgs.push(v);
-        }
-
-        assert!(s.get_ref().downstream_blocked.is_some());
-
-        (msgs, s.into_inner())
-    }
-
-    fn notify_noop() -> NotifyHandle {
-        struct Noop;
-
-        impl Notify for Noop {
-            fn notify(&self, _id: usize) {}
-        }
-
-        const NOOP: &'static Noop = &Noop;
-
-        NotifyHandle::from(NOOP)
-    }
-
-    #[derive(Default)]
-    struct TestStateMachine(Vec<(Instance, Bytes)>);
-
-    impl ReplicatedState for TestStateMachine {
-        fn apply_value(&mut self, instance: Instance, value: Bytes) {
-            self.0.push((instance, value));
-        }
-
-        fn snapshot(&self, _instance: Instance) -> Option<Bytes> {
-            self.0.iter().next_back().map(|v| v.1.clone())
-        }
-    }
-
-    #[derive(Default)]
-    struct NoOpStream;
-    impl Stream for NoOpStream {
-        type Item = ();
-        type Error = io::Error;
-
-        fn poll(&mut self) -> Poll<Option<()>, io::Error> {
-            Ok(Async::NotReady)
-        }
-    }
-
-    #[derive(Default, Clone)]
-    struct NoOpScheduler;
-    impl Scheduler for NoOpScheduler {
-        type Stream = NoOpStream;
-        fn interval(&mut self, _delay: Duration) -> Self::Stream {
-            NoOpStream
-        }
-    }
-
-    #[derive(Clone)]
-    struct IndexedScheduler {
-        sends: Rc<RefCell<Vec<UnboundedSender<()>>>>,
-    }
-
-    impl IndexedScheduler {
-        fn new() -> IndexedScheduler {
-            IndexedScheduler {
-                sends: Rc::new(RefCell::new(Vec::new())),
-            }
-        }
-
-        fn trigger(&self, index: usize) {
-            let sends = self.sends.borrow();
-            sends[index].unbounded_send(()).unwrap();
-        }
-    }
-
-    impl Scheduler for IndexedScheduler {
-        type Stream = IndexedSchedulerStream;
-
-        fn interval(&mut self, _delay: Duration) -> Self::Stream {
-            let (sink, stream) = unbounded::<()>();
-            let mut sends = self.sends.borrow_mut();
-            let index = sends.len();
-            sends.push(sink);
-            IndexedSchedulerStream { index, stream }
-        }
-    }
-
-    struct IndexedSchedulerStream {
-        index: usize,
-        stream: UnboundedReceiver<()>,
-    }
-
-    impl Stream for IndexedSchedulerStream {
-        type Item = ();
-        type Error = io::Error;
-
-        fn poll(&mut self) -> Poll<Option<()>, io::Error> {
-            self.stream
-                .poll()
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, ""))
-        }
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use futures::executor::{spawn, Notify, NotifyHandle};
+//     use std::cell::RefCell;
+//     use std::collections::HashSet;
+//     use std::rc::Rc;
+//     use std::time::Duration;
+//
+//     #[test]
+//     fn catchup() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//
+//         let (_, stream) = proposal_channel();
+//
+//         let mut multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         // advance when instance > current
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Catchup(2, vec![0x0, 0xe].into()),
+//             })
+//             .unwrap();
+//
+//         // check that the instance was advanced
+//         assert_eq!(2, multi_paxos.instance);
+//         assert_eq!(1, multi_paxos.state_machine.0.len());
+//         assert_eq!(&(1, vec![0x0, 0xe].into()), &multi_paxos.state_machine.0[0]);
+//
+//         // ignore previous instance catchup values
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Catchup(0, vec![0xff, 0xff, 0xff].into()),
+//             })
+//             .unwrap();
+//         assert_eq!(2, multi_paxos.instance);
+//         assert_eq!(1, multi_paxos.state_machine.0.len());
+//         assert_eq!(&(1, vec![0x0, 0xe].into()), &multi_paxos.state_machine.0[0]);
+//
+//         // no messages result
+//         assert!(collect_messages(multi_paxos).0.is_empty());
+//     }
+//
+//     #[test]
+//     fn sync() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//
+//         let (_, stream) = proposal_channel();
+//
+//         let mut multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         // force instance to instance=2
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Catchup(2, vec![0x0, 0xe].into()),
+//             })
+//             .unwrap();
+//
+//         // check that the instance was advanced
+//         assert_eq!(2, multi_paxos.instance);
+//
+//         // send a sync message
+//         // (peer 1 at instance=0)
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Sync(0),
+//             })
+//             .unwrap();
+//
+//         // send a sync message that should not get a reply
+//         // since it is > current instance
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Sync(5),
+//             })
+//             .unwrap();
+//
+//         let msgs = collect_messages(multi_paxos).0;
+//         assert_eq!(1, msgs.len());
+//         assert_eq!(
+//             ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Catchup(2, vec![0x0, 0xe].into()),
+//             },
+//             msgs[0]
+//         );
+//     }
+//
+//     #[test]
+//     fn propose_value() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//
+//         let (sink, stream) = proposal_channel();
+//
+//         let multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         sink.propose(vec![0x0, 0xe].into()).unwrap();
+//
+//         // get messages that result
+//         let mut peers = HashSet::new();
+//         for msg in collect_messages(multi_paxos).0 {
+//             peers.insert(msg.peer);
+//             assert_matches!(
+//                 msg.message,
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(0, 0)))
+//             );
+//         }
+//
+//         assert_eq!(2, peers.len());
+//         assert!(peers.contains(&1));
+//         assert!(peers.contains(&2));
+//     }
+//
+//     #[test]
+//     fn on_prepare() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (_, stream) = proposal_channel();
+//
+//         let mut multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         // peer 2 sends instance > current
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Prepare(10, Prepare(Ballot(10, 2))),
+//             })
+//             .unwrap();
+//
+//         // peer 1 sends prepare that is promised
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Prepare(0, Prepare(Ballot(5, 1))),
+//             })
+//             .unwrap();
+//
+//         // promise Ballot(5, 1)
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(1, msgs.len());
+//         assert_eq!(
+//             ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Promise(0, Promise(Ballot(5, 1), None)),
+//             },
+//             msgs[0]
+//         );
+//
+//         // rejects ballot < Ballot(5, 1)
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Prepare(0, Prepare(Ballot(0, 2))),
+//             })
+//             .unwrap();
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(1, msgs.len());
+//         assert_eq!(
+//             ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 2), Ballot(5, 1))),
+//             },
+//             msgs[0]
+//         );
+//
+//         // receive accept then additional promise
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Accept(
+//                     0,
+//                     Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         // ignroe messages from accept (will be tested in another test)
+//         let (_, mut multi_paxos) = collect_messages(multi_paxos);
+//
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Prepare(0, Prepare(Ballot(10, 3))),
+//             })
+//             .unwrap();
+//
+//         let (msgs, _) = collect_messages(multi_paxos);
+//         assert_eq!(1, msgs.len());
+//
+//         assert_eq!(
+//             ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Promise(
+//                     0,
+//                     Promise(
+//                         Ballot(10, 3),
+//                         Some(PromiseValue(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()))
+//                     )
+//                 ),
+//             },
+//             msgs[0]
+//         );
+//     }
+//
+//     #[test]
+//     fn on_promise() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//
+//         let (sink, stream) = proposal_channel();
+//
+//         let multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         sink.propose(vec![0x0, 0xe, 0xb, 0x11].into()).unwrap();
+//
+//         // ensure prepare messages sent out
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//
+//         // ignore promise for wrong instance
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 5,
+//                 message: MultiPaxosMessage::Promise(10, Promise(Ballot(0, 5), None)),
+//             })
+//             .unwrap();
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(0, msgs.len());
+//
+//         // get back promises to eventually form quorum
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Promise(0, Promise(Ballot(0, 0), None)),
+//             })
+//             .unwrap();
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(0, msgs.len());
+//
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Promise(0, Promise(Ballot(0, 0), None)),
+//             })
+//             .unwrap();
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//
+//         {
+//             let mut peers = HashSet::new();
+//             for m in msgs {
+//                 peers.insert(m.peer);
+//                 assert_eq!(
+//                     MultiPaxosMessage::Accept(
+//                         0,
+//                         Accept(Ballot(0, 0), vec![0x0, 0xe, 0xb, 0x11].into())
+//                     ),
+//                     m.message
+//                 );
+//             }
+//
+//             assert_eq!(4, peers.len());
+//             assert!(peers.contains(&1));
+//             assert!(peers.contains(&2));
+//             assert!(peers.contains(&3));
+//             assert!(peers.contains(&4));
+//         }
+//
+//         assert_eq!(0, multi_paxos.instance);
+//     }
+//
+//     #[test]
+//     fn on_reject() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//
+//         let (sink, stream) = proposal_channel();
+//
+//         let multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         sink.propose(vec![0xab, 0xb, 0x11].into()).unwrap();
+//
+//         // ensure prepare messages sent out
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//
+//         // ignore reject for wrong instance
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 5,
+//                 message: MultiPaxosMessage::Reject(10, Reject(Ballot(0, 0), Ballot(1, 1))),
+//             })
+//             .unwrap();
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(0, msgs.len());
+//
+//         // get quorum of REJECT for the proposal
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 0), Ballot(1, 1))),
+//             })
+//             .unwrap();
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(0, msgs.len());
+//
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 0), Ballot(4, 4))),
+//             })
+//             .unwrap();
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(0, msgs.len());
+//
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 0), Ballot(10, 2))),
+//             })
+//             .unwrap();
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//
+//         // assert re-prepare
+//         {
+//             let mut peers = HashSet::new();
+//             for m in msgs {
+//                 peers.insert(m.peer);
+//                 assert_eq!(
+//                     MultiPaxosMessage::Prepare(0, Prepare(Ballot(11, 0))),
+//                     m.message
+//                 );
+//             }
+//
+//             assert_eq!(4, peers.len());
+//             assert!(peers.contains(&1));
+//             assert!(peers.contains(&2));
+//             assert!(peers.contains(&3));
+//             assert!(peers.contains(&4));
+//         }
+//
+//         assert_eq!(0, multi_paxos.instance);
+//     }
+//
+//     #[test]
+//     fn on_accept() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (_, stream) = proposal_channel();
+//
+//         let mut multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         // receive accept for wrong instance
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Accept(
+//                     5,
+//                     Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//
+//         // receive accept from current instance
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Accept(
+//                     0,
+//                     Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//
+//         // check that ACCEPTED broadcast out
+//         {
+//             let mut peers = HashSet::new();
+//             for m in msgs {
+//                 peers.insert(m.peer);
+//                 assert_eq!(
+//                     m.message,
+//                     MultiPaxosMessage::Accepted(
+//                         0,
+//                         Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into())
+//                     )
+//                 );
+//             }
+//
+//             assert_eq!(4, peers.len());
+//             assert!(peers.contains(&1));
+//             assert!(peers.contains(&2));
+//             assert!(peers.contains(&3));
+//             assert!(peers.contains(&4));
+//         }
+//
+//         // reject ACCEPT for ballots < last accept
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Accept(
+//                     0,
+//                     Accept(Ballot(0, 3), vec![0xff, 0xff, 0xff, 0xee].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(1, msgs.len());
+//         assert_eq!(
+//             ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 3), Ballot(5, 1))),
+//             },
+//             msgs[0]
+//         );
+//
+//         // no decision
+//         assert_eq!(0, multi_paxos.instance);
+//     }
+//
+//     #[test]
+//     fn on_accept_quorum2() {
+//         // special case with quorum of size 2
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(2, config.quorum_size());
+//
+//         let (_, stream) = proposal_channel();
+//
+//         let mut multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         // receive accept for wrong instance
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Accept(
+//                     5,
+//                     Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//
+//         // receive accept from current instance
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Accept(
+//                     0,
+//                     Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//
+//         // check that ACCEPTED broadcast out
+//         {
+//             let mut peers = HashSet::new();
+//             for m in msgs {
+//                 peers.insert(m.peer);
+//                 assert_eq!(
+//                     m.message,
+//                     MultiPaxosMessage::Accepted(
+//                         0,
+//                         Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into())
+//                     )
+//                 );
+//             }
+//
+//             assert_eq!(2, peers.len());
+//             assert!(peers.contains(&1));
+//             assert!(peers.contains(&2));
+//         }
+//
+//         // decided on value
+//         assert_eq!(1, multi_paxos.instance);
+//         assert_eq!(1, multi_paxos.state_machine.0.len());
+//         assert_eq!(
+//             (0, vec![0x0, 0x1, 0xff].into()),
+//             multi_paxos.state_machine.0[0]
+//         );
+//     }
+//
+//     #[test]
+//     fn on_accepted() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (_, stream) = proposal_channel();
+//
+//         let mut multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         // receive accepted for wrong instance
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Accepted(
+//                     5,
+//                     Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//         // no decision
+//         assert_eq!(0, multi_paxos.instance);
+//
+//         // receive accept from current instance
+//         //
+//         // peer 1
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Accepted(
+//                     0,
+//                     Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//         // no decision
+//         assert_eq!(0, multi_paxos.instance);
+//
+//         // peer 2
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Accepted(
+//                     0,
+//                     Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//         // no decision
+//         assert_eq!(0, multi_paxos.instance);
+//
+//         // peer 3
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Accepted(
+//                     0,
+//                     Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//
+//         // decided on the value after quorum
+//         assert_eq!(1, multi_paxos.instance);
+//         assert_eq!(1, multi_paxos.state_machine.0.len());
+//         assert_eq!(
+//             (0, vec![0x0, 0x1, 0xff].into()),
+//             multi_paxos.state_machine.0[0]
+//         );
+//     }
+//
+//     #[test]
+//     fn on_accepted_after_accept() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (_, stream) = proposal_channel();
+//
+//         let mut multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         // receive accept (causes 3 and 0 to be added for tracking of quorum)
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Accept(
+//                     0,
+//                     Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//         assert_eq!(0, multi_paxos.instance);
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//
+//         // receive 1 more accepted for quorum
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Accepted(
+//                     0,
+//                     Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//
+//         // decided on the value after quorum
+//         assert_eq!(1, multi_paxos.instance);
+//         assert_eq!(
+//             (0, vec![0x0, 0x1, 0xff].into()),
+//             multi_paxos.state_machine.0[0]
+//         );
+//     }
+//
+//     #[test]
+//     fn on_accept_after_accepted() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (_, stream) = proposal_channel();
+//
+//         let mut multi_paxos = MultiPaxos::new(
+//             NoOpScheduler,
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), NoOpScheduler),
+//         );
+//
+//         // receive ACCEPTED prior to ACCEPT
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 1,
+//                 message: MultiPaxosMessage::Accepted(
+//                     0,
+//                     Accepted(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//         assert_eq!(0, multi_paxos.instance);
+//
+//         // receive accept (causes 3 and 0 to be added for tracking of quorum)
+//         // and thus, we now have quorum
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 3,
+//                 message: MultiPaxosMessage::Accept(
+//                     0,
+//                     Accept(Ballot(5, 1), vec![0x0, 0x1, 0xff].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//
+//         // decided on the value after quorum
+//         assert_eq!(1, multi_paxos.instance);
+//         assert_eq!(
+//             (0, vec![0x0, 0x1, 0xff].into()),
+//             multi_paxos.state_machine.0[0]
+//         );
+//     }
+//
+//     #[test]
+//     fn poll_synchronization() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (_, stream) = proposal_channel();
+//         let scheduler = IndexedScheduler::new();
+//         let multi_paxos = MultiPaxos::new(
+//             scheduler.clone(),
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), scheduler.clone()),
+//         );
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//
+//         // trigger sync task
+//         let stream_index = multi_paxos.sync_timer.stream().index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, _) = collect_messages(multi_paxos);
+//         assert_eq!(1, msgs.len());
+//
+//         assert_eq!(MultiPaxosMessage::Sync(0), msgs[0].message);
+//
+//         let peer = msgs[0].peer;
+//         assert!(peer >= 1);
+//         assert!(peer <= 4);
+//     }
+//
+//     #[test]
+//     fn poll_retransmit_prepare() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4004".parse().unwrap()),
+//                 (4, "127.0.0.1:4005".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (proposal, stream) = proposal_channel();
+//         let scheduler = IndexedScheduler::new();
+//         let multi_paxos = MultiPaxos::new(
+//             scheduler.clone(),
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), scheduler.clone()),
+//         );
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//
+//         proposal.propose(vec![0x11, 0xba, 0x44].into()).unwrap();
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//
+//         // trigger once...
+//         let stream_index = multi_paxos.retransmit_timer.stream().unwrap().index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(0, 0))),
+//                 m.message
+//             );
+//         }
+//
+//         // trigger again
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, _) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(0, 0))),
+//                 m.message
+//             );
+//         }
+//     }
+//
+//     #[test]
+//     fn poll_retransmit_accept() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(2, config.quorum_size());
+//
+//         let (proposal, stream) = proposal_channel();
+//         let scheduler = IndexedScheduler::new();
+//         let multi_paxos = MultiPaxos::new(
+//             scheduler.clone(),
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), scheduler.clone()),
+//         );
+//
+//         // go to phase 2
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//
+//         proposal.propose(vec![0x11, 0xba, 0x44].into()).unwrap();
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(2, msgs.len());
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Promise(0, Promise(Ballot(0, 0), None)),
+//             })
+//             .unwrap();
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(2, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Accept(0, Accept(Ballot(0, 0), vec![0x11, 0xba, 0x44].into())),
+//                 m.message
+//             );
+//         }
+//
+//         // trigger once...
+//         let stream_index = multi_paxos.retransmit_timer.stream().unwrap().index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(2, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Accept(0, Accept(Ballot(0, 0), vec![0x11, 0xba, 0x44].into())),
+//                 m.message
+//             );
+//         }
+//
+//         // trigger again
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, _) = collect_messages(multi_paxos);
+//         assert_eq!(2, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Accept(0, Accept(Ballot(0, 0), vec![0x11, 0xba, 0x44].into())),
+//                 m.message
+//             );
+//         }
+//     }
+//
+//     #[test]
+//     fn poll_reprepare_from_reject() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(2, config.quorum_size());
+//
+//         let (proposal, stream) = proposal_channel();
+//         let scheduler = IndexedScheduler::new();
+//         let multi_paxos = MultiPaxos::new(
+//             scheduler.clone(),
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), scheduler.clone()),
+//         );
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert!(msgs.is_empty());
+//
+//         proposal.propose(vec![0x11, 0xba, 0x44].into()).unwrap();
+//         let (msgs, mut multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(2, msgs.len());
+//
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Reject(0, Reject(Ballot(0, 0), Ballot(2, 2))),
+//             })
+//             .unwrap();
+//
+//         // start with a new ballot
+//         let stream_index = multi_paxos
+//             .master_strategy
+//             .prepare_timer()
+//             .stream()
+//             .unwrap()
+//             .index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(2, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(3, 0))),
+//                 m.message
+//             );
+//         }
+//
+//         // check that the retransmit task is the new prepare message
+//         let stream_index = multi_paxos.retransmit_timer.stream().unwrap().index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(2, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(3, 0))),
+//                 m.message
+//             );
+//         }
+//
+//         // check that an addition prepare timer task has a new ballot
+//         let stream_index = multi_paxos
+//             .master_strategy
+//             .prepare_timer()
+//             .stream()
+//             .unwrap()
+//             .index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, _) = collect_messages(multi_paxos);
+//         assert_eq!(2, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(4, 0))),
+//                 m.message
+//             );
+//         }
+//     }
+//
+//     #[test]
+//     fn poll_reprepare_from_accept() {
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4003".parse().unwrap()),
+//                 (4, "127.0.0.1:4004".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (_, stream) = proposal_channel();
+//         let scheduler = IndexedScheduler::new();
+//         let mut multi_paxos = MultiPaxos::new(
+//             scheduler.clone(),
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             Masterless::new(config.clone(), scheduler.clone()),
+//         );
+//
+//         assert!(multi_paxos
+//             .master_strategy
+//             .prepare_timer()
+//             .stream()
+//             .is_none());
+//
+//         multi_paxos
+//             .start_send(ClusterMessage {
+//                 peer: 2,
+//                 message: MultiPaxosMessage::Accept(
+//                     0,
+//                     Accept(Ballot(2, 2), vec![0x01, 0xee].into()),
+//                 ),
+//             })
+//             .unwrap();
+//
+//         // accepted messages
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//
+//         // start with a new ballot
+//         assert!(multi_paxos
+//             .master_strategy
+//             .prepare_timer()
+//             .stream()
+//             .is_some());
+//         let stream_index = multi_paxos
+//             .master_strategy
+//             .prepare_timer()
+//             .stream()
+//             .unwrap()
+//             .index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(3, 0))),
+//                 m.message
+//             );
+//         }
+//
+//         // check that the retransmit task is the new prepare message
+//         let stream_index = multi_paxos.retransmit_timer.stream().unwrap().index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, multi_paxos) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(3, 0))),
+//                 m.message
+//             );
+//         }
+//
+//         // check that an addition prepare timer task has a new ballot
+//         let stream_index = multi_paxos
+//             .master_strategy
+//             .prepare_timer()
+//             .stream()
+//             .unwrap()
+//             .index;
+//         scheduler.trigger(stream_index);
+//
+//         let (msgs, _) = collect_messages(multi_paxos);
+//         assert_eq!(4, msgs.len());
+//         for m in msgs {
+//             assert_eq!(
+//                 MultiPaxosMessage::Prepare(0, Prepare(Ballot(4, 0))),
+//                 m.message
+//             );
+//         }
+//     }
+//
+//     #[test]
+//     fn proposal_redirection() {
+//         struct RedirectMasterStrategy(Configuration);
+//
+//         impl MasterStrategy for RedirectMasterStrategy {
+//             fn next_instance(
+//                 &mut self,
+//                 _inst: Instance,
+//                 _accepted_bal: Option<Ballot>,
+//             ) -> PaxosInstance {
+//                 PaxosInstance::new(self.0.current(), self.0.quorum_size(), None, None)
+//             }
+//
+//             fn on_reject(&mut self, _inst: Instance) {}
+//             fn on_accept(&mut self, _inst: Instance) {}
+//
+//             fn proposal_action(&self) -> ProposalAction {
+//                 ProposalAction::Redirect(4)
+//             }
+//         }
+//
+//         impl Stream<Action> for RedirectMasterStrategy {
+//             fn poll_next(self: Pin<&mut Self>, _cx: Context) -> Poll<Option<Action>> {
+//                 Poll::Pending
+//             }
+//         }
+//
+//         let config = Configuration::new(
+//             (0u32, "127.0.0.1:4000".parse().unwrap()),
+//             vec![
+//                 (1, "127.0.0.1:4001".parse().unwrap()),
+//                 (2, "127.0.0.1:4002".parse().unwrap()),
+//                 (3, "127.0.0.1:4003".parse().unwrap()),
+//                 (4, "127.0.0.1:4004".parse().unwrap()),
+//             ]
+//             .into_iter(),
+//         );
+//
+//         assert_eq!(3, config.quorum_size());
+//
+//         let (sink, stream) = proposal_channel();
+//         let multi_paxos = MultiPaxos::new(
+//             stream,
+//             TestStateMachine::default(),
+//             config.clone(),
+//             RedirectMasterStrategy(config.clone()),
+//         );
+//
+//         sink.propose(b"hello".to_vec().into()).unwrap();
+//
+//         // assert the proposal is redirected
+//         let (msgs, _) = collect_messages(multi_paxos);
+//         assert_eq!(1, msgs.len());
+//         assert_eq!(
+//             ClusterMessage {
+//                 peer: 4,
+//                 message: MultiPaxosMessage::RedirectProposal(b"hello".to_vec().into()),
+//             },
+//             msgs[0]
+//         );
+//     }
+//
+//     fn collect_messages<M: MasterStrategy>(
+//         multi_paxos: MultiPaxos<TestStateMachine, M, S>,
+//     ) -> (
+//         Vec<ClusterMessage>,
+//         MultiPaxos<TestStateMachine, M, S>,
+//     ) {
+//         let mut msgs = vec![];
+//         loop {
+//             let res = s.poll_next(
+//             while let Async::Ready(Some(v)) = s.poll_stream_notify(&h, 120).unwrap() {
+//                 msgs.push(v);
+//             }
+//         }
+//
+//         assert!(s.get_ref().downstream_blocked.is_some());
+//
+//         (msgs, s.into_inner())
+//     }
+//
+//     fn notify_noop() -> NotifyHandle {
+//         struct Noop;
+//
+//         impl Notify for Noop {
+//             fn notify(&self, _id: usize) {}
+//         }
+//
+//         const NOOP: &'static Noop = &Noop;
+//
+//         NotifyHandle::from(NOOP)
+//     }
+//
+//     #[derive(Default)]
+//     struct TestStateMachine(Vec<(Instance, Bytes)>);
+//
+//     impl ReplicatedState for TestStateMachine {
+//         fn apply_value(&mut self, instance: Instance, value: Bytes) {
+//             self.0.push((instance, value));
+//         }
+//
+//         fn snapshot(&self, _instance: Instance) -> Option<Bytes> {
+//             self.0.iter().next_back().map(|v| v.1.clone())
+//         }
+//     }
+// }

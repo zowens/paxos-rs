@@ -85,14 +85,6 @@ impl<V: Clone> RetransmitTimer<V>
             (inst, msg),
         );
     }
-
-    #[cfg(test)]
-    pub fn stream(&self) -> Option<&S::Stream> {
-        match self.state {
-            TimerState::Scheduled(ref s, _) => Some(s),
-            _ => None,
-        }
-    }
 }
 
 impl<V: Clone> Default for RetransmitTimer<V> {
@@ -152,14 +144,6 @@ impl InstanceResolutionTimer {
         self.backoff_ms = RESOLUTION_STARTING_MS;
         self.state.reset();
     }
-
-    #[cfg(test)]
-    pub fn stream(&self) -> Option<&Interval> {
-        match self.state {
-            TimerState::Scheduled(ref s, _) => Some(s),
-            _ => None,
-        }
-    }
 }
 
 impl Default for InstanceResolutionTimer {
@@ -184,13 +168,6 @@ impl Stream for InstanceResolutionTimer {
 pub struct RandomPeerSyncTimer {
     #[pin]
     interval: Interval,
-}
-
-impl RandomPeerSyncTimer {
-    #[cfg(test)]
-    pub fn stream(&self) -> &S::Stream {
-        &self.interval
-    }
 }
 
 impl Default for RandomPeerSyncTimer {
