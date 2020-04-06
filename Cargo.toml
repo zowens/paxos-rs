@@ -16,7 +16,7 @@ either = "1.5.3"
 tokio-io = "0.1.4"
 serde_derive = "1.0.103"
 serde_cbor = "0.11"
-serde = "1.0.103"
+serde = "1.0.106"
 bytes = "0.4"
 
 [dev-dependencies]
