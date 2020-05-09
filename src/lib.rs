@@ -50,6 +50,7 @@ pub mod messages;
 pub mod multipaxos;
 mod net;
 pub mod paxos;
+pub mod multi_paxos;
 mod proposals;
 mod register;
 mod state;
