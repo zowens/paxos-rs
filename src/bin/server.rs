@@ -4,10 +4,12 @@ extern crate log;
 extern crate paxos;
 extern crate tokio;
 
+use std::sync::{Arc, RwLock};
 use bytes::Bytes;
-use log::{debug, error};
+use log::{info, debug, error};
 use paxos::{
-    Configuration, MultiPaxosBuilder, ProposalSender, Register, ReplicatedState, UdpServer,
+    Configuration, MultiPaxosBuilder, ProposalSender, ReplicatedState, UdpServer,
+    Instance
 };
 use std::env::args;
 use std::io;
@@ -16,6 +18,38 @@ use std::net::SocketAddr;
 use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::spawn;
+
+/// Replicated mutable value register
+#[derive(Clone)]
+pub struct Register {
+    value: Arc<RwLock<Option<Bytes>>>,
+}
+
+impl Register {
+    pub fn new() -> Register {
+        Register {
+            value: Arc::new(RwLock::new(None)),
+        }
+    }
+}
+
+impl ReplicatedState for Register {
+    fn apply_value(&mut self, instance: Instance, value: Bytes) {
+        info!(
+            "[RESOLUTION] with value at instance {}: {:?}",
+            instance, value
+        );
+
+        let mut val = self.value.write().unwrap();
+        *val = Some(value);
+    }
+
+    fn snapshot(&self, _instance: Instance) -> Option<Bytes> {
+        let val = self.value.read().unwrap();
+        val.clone()
+    }
+}
+
 
 fn local_config(node: u16) -> (Configuration, SocketAddr) {
     assert!(node < 3);
@@ -48,14 +82,21 @@ async fn client_handler(
                     Some(v) => v,
                     None => Bytes::from_static("ERR: No Value".as_bytes()),
                 };
-                write.write_all(&output).await?;
+                info!("Get: {:?}", output);
+                if let Err(e) = write.write_all(&output).await {
+                    eprintln!("failed to write to socket; err = {:?}", e);
+                }
             }
             Ok(Some(s)) if s.starts_with("propose") => {
+                info!("Propose: {}", s);
                 let val = match proposals.propose(s.into()) {
                     Ok(_) => "OK",
                     Err(_) => "ERR: Error adding proposal",
                 };
-                write.write_all(val.as_bytes()).await?;
+                info!("Propose: {}", val);
+                if let Err(e) = write.write_all(val.as_bytes()).await {
+                    eprintln!("failed to write to socket; err = {:?}", e);
+                }
             }
             Ok(Some(s)) => {
                 let err_str = format!("ERR: invalid command {}", s);
@@ -68,6 +109,9 @@ async fn client_handler(
                 error!("ERROR: {}", e);
                 return Err(e);
             }
+        }
+        if let Err(e) = write.write_all(b"\n").await {
+            eprintln!("failed to flush socket; err = {:?}", e);
         }
     }
 }
@@ -89,7 +133,7 @@ async fn tcp_listener(
 
         let register = register.clone();
         let proposals = proposals.clone();
-        spawn(async move { client_handler(socket, register, proposals).await });
+        spawn(async move { client_handler(socket, register, proposals).await});
     }
 }
 
@@ -105,14 +149,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:?}", config);
 
     let register = Register::new();
-    let mut server = UdpServer::new(config.clone()).unwrap();
+    let server = UdpServer::new(config.clone()).unwrap();
 
-    let (proposal_sink, multi_paxos) = MultiPaxosBuilder::new(config)
-        .with_state_machine(register.clone())
-        .build();
-    server
-        .runtime_mut()
-        .spawn(tcp_listener(register, client_addr, proposal_sink));
-    server.run(multi_paxos);
+    let (proposal_sink, multi_paxos) = MultiPaxosBuilder::new(config, register.clone()).build();
+    let tcp_fut = tcp_listener(register, client_addr, proposal_sink);
+    let server_fut = server.run(multi_paxos);
+    let (_, _) = tokio::join!(tcp_fut, server_fut);
     Ok(())
 }
