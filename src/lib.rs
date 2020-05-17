@@ -51,7 +51,6 @@ pub mod multipaxos;
 mod net;
 pub mod paxos;
 mod proposals;
-mod register;
 mod state;
 mod statemachine;
 mod timer;
@@ -62,7 +61,6 @@ use master::{DistinguishedProposer, MasterStrategy, Masterless};
 use multipaxos::MultiPaxos;
 pub use net::UdpServer;
 pub use proposals::ProposalSender;
-pub use register::Register;
 pub use statemachine::ReplicatedState;
 
 /// An instance is a _round_ of the Paxos algorithm. Instances are chained to
@@ -79,16 +77,17 @@ pub struct MultiPaxosBuilder<R: ReplicatedState, M: MasterStrategy> {
     master_strategy: M,
 }
 
-impl MultiPaxosBuilder<Register, DistinguishedProposer> {
+impl <R: ReplicatedState> MultiPaxosBuilder<R, DistinguishedProposer> {
     /// Creates a default implementation of MultiPaxos that uses a `Register` as the state machine,
     /// `DistinguishedProposer` master strategy, and default scheduler.
     pub fn new(
         config: Configuration,
-    ) -> MultiPaxosBuilder<Register, DistinguishedProposer>
+        state_machine: R,
+    ) -> MultiPaxosBuilder<R, DistinguishedProposer>
     {
         let master_strategy = DistinguishedProposer::new(config.clone());
         MultiPaxosBuilder {
-            state_machine: Register::new(),
+            state_machine,
             config,
             master_strategy,
         }
@@ -96,17 +95,6 @@ impl MultiPaxosBuilder<Register, DistinguishedProposer> {
 }
 
 impl<R: ReplicatedState, M: MasterStrategy> MultiPaxosBuilder<R, M> {
-    /// Sets the state machine
-    pub fn with_state_machine<SM: ReplicatedState>(
-        self,
-        state_machine: SM,
-    ) -> MultiPaxosBuilder<SM, M> {
-        MultiPaxosBuilder {
-            state_machine,
-            config: self.config,
-            master_strategy: self.master_strategy,
-        }
-    }
 
     /// Sets the master strategy to utilize masterless
     pub fn with_masterless_strategy(self) -> MultiPaxosBuilder<R, Masterless> {

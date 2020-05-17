@@ -9,7 +9,6 @@ use serde_cbor::{de, ser};
 use std::io;
 use std::net::SocketAddr;
 use tokio_util::udp::UdpFramed;
-use tokio::runtime::Runtime;
 use tokio_util::codec::{Decoder, Encoder};
 use pin_project::pin_project;
 use std::pin::Pin;
@@ -38,10 +37,11 @@ impl Decoder for MultiPaxosCodec {
     }
 }
 
-impl Encoder for MultiPaxosCodec {
-    type Item = MultiPaxosMessage;
+impl Encoder<MultiPaxosMessage> for MultiPaxosCodec {
+
     type Error = io::Error;
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+
+    fn encode(&mut self, item: MultiPaxosMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let w = dst.writer();
         match item.serialize(&mut ser::Serializer::new(&mut ser::IoWrite::new(w)).packed_format()) {
             Ok(_) => Ok(()),
@@ -133,41 +133,32 @@ where
 /// Server that runs a multi-paxos node over the network with UDP.
 pub struct UdpServer {
     config: Configuration,
-    runtime: Runtime,
 }
 
 impl UdpServer {
     /// Creates a new `UdpServer` with the address of the node
     /// specified in the configuration.
     pub fn new(config: Configuration) -> io::Result<UdpServer> {
-        let runtime = Runtime::new()?;
-
         Ok(UdpServer {
             config,
-            runtime,
         })
     }
 
-    /// Gets a handle in order to spawn additional futures other than the multi-paxos
-    /// node. For example, a client-facing protocol can be spawned with a handle.
-    pub fn runtime_mut(&mut self) -> &mut Runtime {
-        &mut self.runtime
-    }
-
     /// Runs a multi-paxos node, blocking until the program is terminated.
-    pub fn run<S: Send + 'static>(
+    pub async fn run<S: Send + 'static>(
         self,
         multipaxos: S,
-    ) where
+    ) -> std::io::Result<()>
+    where
         S: Stream<Item = ClusterMessage>,
         S: Sink<ClusterMessage, Error = io::Error>,
     {
-        let UdpServer { config, mut runtime } = self;
+        let UdpServer { config } = self;
         let current_address = config.current_address().clone();
-        let f = UdpSocket::bind(current_address).and_then(move |socket| {
+        UdpSocket::bind(current_address).and_then(move |socket| {
             let multipaxos = NetworkedMultiPaxos {
                 s: multipaxos,
-                config: config,
+                config,
             };
             let (sink, stream) = multipaxos.split();
 
@@ -179,8 +170,7 @@ impl UdpServer {
 
             // receive messages from network to upstream
             EmptyFuture(net_stream.forward(sink))
-        });
-        runtime.block_on(f).expect("Expected no errors when polling UDP socket");
+        }).await
     }
 }
 
