@@ -58,7 +58,7 @@ impl Reject {
 /// `ACCEPTED` is the Phase 2b message that is broadcast from acceptors
 /// denoting acceptance of a value.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
-pub struct Accepted(pub Ballot, #[serde(with="::bytes_value")] pub Bytes);
+pub struct Accepted(pub Ballot);
 
 /// `RESOLUTION` is the result of a quorum of `ACCEPTED` messages being received.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]

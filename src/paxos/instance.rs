@@ -331,7 +331,7 @@ impl Acceptor {
                 // to ensure that future PREPARE messages from Proposers will not be lower
                 // than the accepted value from this ACCEPT message.
                 self.promised = Some(proposal);
-                Either::Left(Accepted(proposal, value))
+                Either::Left(Accepted(proposal))
             }
         }
     }
@@ -382,11 +382,22 @@ struct Learner {
 }
 
 impl Learner {
+    /// Notice (ballot, value) pairs
+    fn notice_value(&mut self, bal: Ballot, value: Bytes) {
+        if let LearnerState::AwaitQuorum { ref mut proposals, .. } = self.state {
+            let quorum = self.quorum;
+            proposals.entry(bal).or_insert_with(|| ProposalStatus {
+                acceptors: QuorumSet::with_size(quorum),
+                value,
+            });
+        }
+    }
+
     /// Handles ACCEPTED messages from acceptors.
     fn receive_accepted(&mut self, peer: NodeId, accepted: Accepted) -> Option<Resolution> {
-        let Accepted(proposal, value) = accepted;
+        let Accepted(proposal) = accepted;
 
-        match self.state {
+        let resolve_value = match self.state {
             // a learner awaiting quorum is waiting for a majority
             // of acceptors to finish Phase 2 and send the ACCEPTED
             // message (Phase 2b)
@@ -437,23 +448,21 @@ impl Learner {
 
                 // insert the ACCEPTED as part of the ballot
                 debug!("Accepted {:?} for peer={}", proposal, peer);
-                let quorum = self.quorum;
-                let proposal_status =
-                    proposals.entry(proposal).or_insert_with(|| ProposalStatus {
-                        acceptors: QuorumSet::with_size(quorum),
-                        value: value.clone(),
-                    });
-
-                debug_assert_eq!(
-                    value, proposal_status.value,
-                    "Values for acceptor value does not match value from ACCEPTED message"
-                );
-                proposal_status.acceptors.insert(peer);
-
-                // if learner has has quorum of ACCEPTED messages, transition to final
-                // otherwise no resolution has been reached
-                if !proposal_status.acceptors.has_quorum() {
-                    return None;
+                match proposals.entry(proposal) {
+                    Occupied(ref mut entry) =>  {
+                        let proposal_status = entry.get_mut();
+                        proposal_status.acceptors.insert(peer);
+                        // if learner has has quorum of ACCEPTED messages, transition to final
+                        // otherwise no resolution has been reached
+                        if !proposal_status.acceptors.has_quorum() {
+                            return None;
+                        }
+                        proposal_status.value.clone()
+                    },
+                    Vacant(_) => {
+                        warn!("Unknown value for ballot {:?}", proposal);
+                        return None;
+                    }
                 }
             }
             LearnerState::Final {
@@ -468,11 +477,11 @@ impl Learner {
 
         // a final value has been selected, move the state to final
         self.state = LearnerState::Final {
-            value: value.clone(),
+            value: resolve_value.clone(),
             accepted: proposal,
         };
 
-        Some(Resolution(proposal, value))
+        Some(Resolution(proposal, resolve_value))
     }
 }
 
@@ -491,7 +500,16 @@ impl PaxosInstance {
         promised: Option<Ballot>,
         accepted: Option<PromiseValue>,
     ) -> PaxosInstance {
-        // TODO: if `accepted` is Some, add to learner
+        let mut learner = Learner {
+                state: LearnerState::AwaitQuorum {
+                    proposals: HashMap::with_capacity(quorum * 2),
+                    acceptors: HashMap::with_capacity(quorum * 2),
+                },
+                quorum,
+        };
+        if let Some(PromiseValue(bal, val)) = accepted.clone() {
+            learner.notice_value(bal, val);
+        }
 
         PaxosInstance {
             proposer: Proposer {
@@ -501,13 +519,7 @@ impl PaxosInstance {
                 quorum,
             },
             acceptor: Acceptor { promised, accepted },
-            learner: Learner {
-                state: LearnerState::AwaitQuorum {
-                    proposals: HashMap::with_capacity(quorum * 2),
-                    acceptors: HashMap::with_capacity(quorum * 2),
-                },
-                quorum,
-            },
+            learner,
         }
     }
 
@@ -567,8 +579,10 @@ impl PaxosInstance {
     ///
     /// TODO: Do we need to note if the value is not used?
     pub fn propose_value(&mut self, v: Bytes) -> Option<ProposerMsg> {
-        match self.proposer.propose_value(v) {
+        match self.proposer.propose_value(v.clone()) {
             Some(Either::Left(prepare)) => {
+                self.learner.notice_value(prepare.0, v);
+
                 // node auto-accepts proposal from itself
                 let current_node = self.proposer.current;
                 match self.acceptor.receive_prepare(current_node, prepare.clone()) {
@@ -582,9 +596,11 @@ impl PaxosInstance {
                 Some(Either::Left(prepare))
             }
             Some(Either::Right(accept)) => {
+                self.learner.notice_value(accept.0, v);
+
                 // track the proposer as accepting the ballot
                 self.learner
-                    .receive_accepted(self.proposer.current, Accepted(accept.0, accept.1.clone()));
+                    .receive_accepted(self.proposer.current, Accepted(accept.0));
                 Some(Either::Right(accept))
             }
             v => v,
@@ -602,7 +618,7 @@ impl PaxosInstance {
             Some(accept) => {
                 // track the proposer as accepting the ballot
                 self.learner
-                    .receive_accepted(self.proposer.current, Accepted(accept.0, accept.1.clone()));
+                    .receive_accepted(self.proposer.current, Accepted(accept.0));
                 Some(accept)
             }
             None => None,
@@ -636,6 +652,7 @@ impl PaxosInstance {
         accept: Accept,
     ) -> Either<(Accepted, Option<Resolution>), Reply<Reject>> {
         self.proposer.observe_ballot(accept.0);
+        self.learner.notice_value(accept.0, accept.1.clone());
         match self.acceptor.receive_accept(peer, accept) {
             Either::Left(accepted) => {
                 // track self as accepting in the learner state machine
@@ -1054,7 +1071,7 @@ mod tests {
         assert!(res.is_left());
         assert_eq!(
             res.left().unwrap(),
-            (Accepted(Ballot(101, 1), vec![0xee, 0xe0].into()), None)
+            (Accepted(Ballot(101, 1)), None)
         );
         assert_matches!(paxos.acceptor.promised, Some(Ballot(101, 1)));
 
@@ -1075,7 +1092,7 @@ mod tests {
         assert_eq!(
             res.left().unwrap(),
             (
-                Accepted(Ballot(101, 1), vec![0xee, 0xe0].into()),
+                Accepted(Ballot(101, 1)),
                 Some(Resolution(Ballot(101, 1), vec![0xee, 0xe0].into()))
             )
         );
@@ -1088,7 +1105,8 @@ mod tests {
 
         // accepts new ballots
         let val: Bytes = vec![0x0u8, 0xeeu8].into();
-        let resolution = paxos.receive_accepted(1, Accepted(Ballot(100, 0), val.clone()));
+        paxos.learner.notice_value(Ballot(100, 0), val.clone());
+        let resolution = paxos.receive_accepted(1, Accepted(Ballot(100, 0)));
         assert!(resolution.is_none());
         assert_matches!(
             paxos.learner.state,
@@ -1099,7 +1117,7 @@ mod tests {
         );
 
         // ignores previous ballots from the same acceptor
-        let resolution = paxos.receive_accepted(1, Accepted(Ballot(90, 0), val.clone()));
+        let resolution = paxos.receive_accepted(1, Accepted(Ballot(90, 0)));
         assert!(resolution.is_none());
         assert_matches!(
             paxos.learner.state,
@@ -1112,7 +1130,7 @@ mod tests {
         );
 
         // allows quorum to be reached
-        let resolution = paxos.receive_accepted(2, Accepted(Ballot(100, 0), val.clone()));
+        let resolution = paxos.receive_accepted(2, Accepted(Ballot(100, 0)));
         assert!(resolution.is_some());
         assert_matches!(
             resolution.unwrap(),
@@ -1121,7 +1139,7 @@ mod tests {
         );
 
         // ignores other ballots once quorum reached
-        let resolution = paxos.receive_accepted(3, Accepted(Ballot(90, 0), vec![0x0].into()));
+        let resolution = paxos.receive_accepted(3, Accepted(Ballot(90, 0)));
         assert!(resolution.is_some());
         assert_matches!(
             resolution.unwrap(),
@@ -1130,7 +1148,7 @@ mod tests {
         );
 
         // adds acceptors that match the ballot
-        let resolution = paxos.receive_accepted(4, Accepted(Ballot(100, 0), val.clone()));
+        let resolution = paxos.receive_accepted(4, Accepted(Ballot(100, 0)));
         assert!(resolution.is_some());
         assert_matches!(
             resolution.unwrap(),
