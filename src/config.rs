@@ -1,4 +1,3 @@
-use rand::prelude::{thread_rng, SmallRng, Rng, SeedableRng};
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::fmt;
@@ -15,7 +14,6 @@ pub struct Configuration {
     current: (NodeId, SocketAddr),
     peers: HashMap<NodeId, SocketAddr>,
     socket_to_peer: HashMap<SocketAddr, NodeId>,
-    rand: SmallRng,
 }
 
 impl Configuration {
@@ -31,7 +29,6 @@ impl Configuration {
             current,
             peers,
             socket_to_peer,
-            rand: SmallRng::from_rng(thread_rng()).unwrap(),
         }
     }
 
@@ -53,13 +50,6 @@ impl Configuration {
     /// Iterator containing `NodeId` values of peers
     pub fn peers(&self) -> PeerIntoIter {
         PeerIntoIter { r: &self }
-    }
-
-    /// Randomly selects a peer to transmit messages.
-    pub fn random_peer(&mut self) -> Option<NodeId> {
-        let len = self.peers.len();
-        let n = self.rand.gen_range(0, len);
-        self.peers.keys().nth(n).cloned()
     }
 
     /// Gets the address of a node.
