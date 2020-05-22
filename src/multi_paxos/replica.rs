@@ -18,11 +18,8 @@ impl<S: Sender> Replica<S> {
 
     /// Replica creation from a sender and starting configuration
     pub fn new(sender: S, config: Configuration) -> Replica<S> {
-        let paxos_inst = paxos::PaxosInstance::new(
-            config.current(),
-            config.quorum_size(),
-            None,
-            None);
+        let paxos_inst =
+            paxos::PaxosInstance::new(config.current(), config.quorum_size(), None, None);
         Replica {
             sender,
             config,
@@ -44,7 +41,9 @@ impl<S: Sender> Replica<S> {
     }
 
     fn broadcast<F>(&mut self, f: F)
-        where F: Fn(&mut S::Commander) -> () {
+    where
+        F: Fn(&mut S::Commander) -> (),
+    {
         // TODO: thrifty option
         for node in self.config.peers().into_iter() {
             self.sender.send_to(node, &f);
@@ -56,15 +55,19 @@ impl<S: Sender> Replica<S> {
             self.config.current(),
             self.config.quorum_size(),
             Some(bal),
-            None);
+            None,
+        );
         let inst = self.current.0 + 1;
         self.current = (inst, paxos_inst);
     }
 }
 
 impl<S: Sender> Commander for Replica<S> {
-    fn proposal(&mut self, val: Bytes){
-        let node = self.current.1.last_promised()
+    fn proposal(&mut self, val: Bytes) {
+        let node = self
+            .current
+            .1
+            .last_promised()
             .map(|Ballot(_, node)| node)
             .unwrap_or(self.config.current());
 
@@ -91,14 +94,22 @@ impl<S: Sender> Commander for Replica<S> {
     fn prepare(&mut self, bal: Ballot) {
         let node_id = self.config.current();
         match self.current.1.receive_prepare(bal.1, paxos::Prepare(bal)) {
-            Either::Left(paxos::Reply { message: paxos::Promise(bal, last_accepted), .. }) => {
+            Either::Left(paxos::Reply {
+                message: paxos::Promise(bal, last_accepted),
+                ..
+            }) => {
                 let last_accepted = last_accepted.map(|paxos::PromiseValue(b, v)| (b, v));
                 let slot = self.current.0;
-                self.sender.send_to(bal.1, |c| c.promise(node_id, slot, bal, last_accepted));
-            },
-            Either::Right(paxos::Reply { message: paxos::Reject(bal, preempted), .. }) => {
-                self.sender.send_to(bal.1, |c| c.reject(node_id, bal, preempted));
-            },
+                self.sender
+                    .send_to(bal.1, |c| c.promise(node_id, slot, bal, last_accepted));
+            }
+            Either::Right(paxos::Reply {
+                message: paxos::Reject(bal, preempted),
+                ..
+            }) => {
+                self.sender
+                    .send_to(bal.1, |c| c.reject(node_id, bal, preempted));
+            }
         }
     }
 
@@ -124,10 +135,15 @@ impl<S: Sender> Commander for Replica<S> {
         match self.current.1.receive_accept(bal.1, accept_msg) {
             Either::Left((paxos::Accepted(bal), _)) => {
                 // TODO: is a resolution actually possible here?!
-                self.sender.send_to(bal.1, |c| c.accepted(current_node, slot, bal));
-            },
-            Either::Right(paxos::Reply { message: paxos::Reject(proposed, promised), .. }) => {
-                self.sender.send_to(bal.1, |c| c.reject(current_node, proposed, promised));
+                self.sender
+                    .send_to(bal.1, |c| c.accepted(current_node, slot, bal));
+            }
+            Either::Right(paxos::Reply {
+                message: paxos::Reject(proposed, promised),
+                ..
+            }) => {
+                self.sender
+                    .send_to(bal.1, |c| c.reject(current_node, proposed, promised));
             }
         }
     }
@@ -145,7 +161,9 @@ impl<S: Sender> Commander for Replica<S> {
         }
 
         let paxos_accepted = paxos::Accepted(bal);
-        if let Some(paxos::Resolution(bal, val)) = self.current.1.receive_accepted(node, paxos_accepted) {
+        if let Some(paxos::Resolution(bal, val)) =
+            self.current.1.receive_accepted(node, paxos_accepted)
+        {
             // send out the resolution and advance to the next instance
             self.broadcast(|c| c.resolution(slot, bal, val.clone()));
             self.next_instance(bal);
@@ -160,7 +178,6 @@ impl<S: Sender> Commander for Replica<S> {
         self.next_instance(bal);
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -187,17 +204,17 @@ mod tests {
 
         // sent with no existing proposal, kickstarts phase 1
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0,4)), replica.last_promised());
-        assert_eq!(&[Command::Prepare(Ballot(0,4))], &replica.sender[0]);
-        assert_eq!(&[Command::Prepare(Ballot(0,4))], &replica.sender[1]);
-        assert_eq!(&[Command::Prepare(Ballot(0,4))], &replica.sender[2]);
-        assert_eq!(&[Command::Prepare(Ballot(0,4))], &replica.sender[3]);
+        assert_eq!(Some(Ballot(0, 4)), replica.last_promised());
+        assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[0]);
+        assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[1]);
+        assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[2]);
+        assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[3]);
         replica.sender.clear();
 
         // for now, drop proposals while we have an instance in-flight
         // TODO: this should advance to another instance
         replica.proposal("456".into());
-        assert_eq!(Some(Ballot(0,4)), replica.last_promised());
+        assert_eq!(Some(Ballot(0, 4)), replica.last_promised());
         assert!(replica.sender[0].is_empty());
         assert!(replica.sender[1].is_empty());
         assert!(replica.sender[2].is_empty());
@@ -210,7 +227,7 @@ mod tests {
     fn replica_proposal_redirection() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.prepare(Ballot(0, 3));
-        assert_eq!(Some(Ballot(0,3)), replica.last_promised());
+        assert_eq!(Some(Ballot(0, 3)), replica.last_promised());
         replica.sender.clear();
 
         replica.proposal("123".into());
@@ -225,18 +242,24 @@ mod tests {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
 
         replica.prepare(Ballot(1, 0));
-        assert_eq!(Some(Ballot(1,0)), replica.last_promised());
-        assert_eq!(&[Command::Promise(4, 0, Ballot(1,0), None)], &replica.sender[0]);
+        assert_eq!(Some(Ballot(1, 0)), replica.last_promised());
+        assert_eq!(
+            &[Command::Promise(4, 0, Ballot(1, 0), None)],
+            &replica.sender[0]
+        );
         assert!(&replica.sender[1].is_empty());
         assert!(&replica.sender[2].is_empty());
         assert!(&replica.sender[3].is_empty());
         replica.sender.clear();
 
         replica.prepare(Ballot(0, 2));
-        assert_eq!(Some(Ballot(1,0)), replica.last_promised());
+        assert_eq!(Some(Ballot(1, 0)), replica.last_promised());
         assert!(&replica.sender[0].is_empty());
         assert!(&replica.sender[1].is_empty());
-        assert_eq!(&[Command::Reject(4, Ballot(0, 2), Ballot(1,0))], &replica.sender[2]);
+        assert_eq!(
+            &[Command::Reject(4, Ballot(0, 2), Ballot(1, 0))],
+            &replica.sender[2]
+        );
         assert!(&replica.sender[3].is_empty());
     }
 
@@ -244,7 +267,7 @@ mod tests {
     fn replica_promise_without_existing_accepted_value() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0,4)), replica.last_promised());
+        assert_eq!(Some(Ballot(0, 4)), replica.last_promised());
         replica.sender.clear();
 
         // replica needs 2 more promises to achieve Phase 1 Quorum
@@ -253,14 +276,19 @@ mod tests {
 
         replica.promise(2, 0, Ballot(0, 4), None);
 
-        (0..4).for_each(|i| assert_eq!(&[Command::Accept(0, Ballot(0,4), "123".into())], &replica.sender[i]));
+        (0..4).for_each(|i| {
+            assert_eq!(
+                &[Command::Accept(0, Ballot(0, 4), "123".into())],
+                &replica.sender[i]
+            )
+        });
     }
 
     #[test]
     fn replica_promise_with_existing_accepted_value() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0,4)), replica.last_promised());
+        assert_eq!(Some(Ballot(0, 4)), replica.last_promised());
         replica.sender.clear();
 
         // replica needs 2 more promises to achieve Phase 1 Quorum
@@ -269,7 +297,12 @@ mod tests {
 
         replica.promise(2, 0, Ballot(0, 4), None);
 
-        (0..4).for_each(|i| assert_eq!(&[Command::Accept(0, Ballot(0,4), "456".into())], &replica.sender[i]));
+        (0..4).for_each(|i| {
+            assert_eq!(
+                &[Command::Accept(0, Ballot(0, 4), "456".into())],
+                &replica.sender[i]
+            )
+        });
     }
 
     #[test]
@@ -281,7 +314,10 @@ mod tests {
 
         // test rejection first for bal < last_promised
         replica.accept(0, Ballot(1, 1), "123".into());
-        assert_eq!(&[Command::Reject(4, Ballot(1,1), Ballot(8,2))], &replica.sender[1]);
+        assert_eq!(
+            &[Command::Reject(4, Ballot(1, 1), Ballot(8, 2))],
+            &replica.sender[1]
+        );
         replica.sender.clear();
 
         // test replying with accepted message when bal = last_promised
@@ -300,7 +336,7 @@ mod tests {
     fn replica_reject() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0,4)), replica.last_promised());
+        assert_eq!(Some(Ballot(0, 4)), replica.last_promised());
         replica.sender.clear();
 
         // 1 replica does not meet rejection quorum
@@ -320,7 +356,7 @@ mod tests {
     fn replica_accepted() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0,4)), replica.last_promised());
+        assert_eq!(Some(Ballot(0, 4)), replica.last_promised());
         replica.promise(1, 0, Ballot(0, 4), None);
         replica.promise(0, 0, Ballot(0, 4), None);
         replica.promise(2, 0, Ballot(0, 4), None);
@@ -331,7 +367,12 @@ mod tests {
         (0..4).for_each(|i| assert!(replica.sender[i].is_empty()));
 
         replica.accepted(2, 0, Ballot(0, 4));
-        (0..4).for_each(|i| assert_eq!(&[Command::Resolution(0, Ballot(0, 4), "123".into())], &replica.sender[i]));
+        (0..4).for_each(|i| {
+            assert_eq!(
+                &[Command::Resolution(0, Ballot(0, 4), "123".into())],
+                &replica.sender[i]
+            )
+        });
     }
 
     #[test]
@@ -345,7 +386,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct VecSender([Vec<Command>;4]);
+    struct VecSender([Vec<Command>; 4]);
 
     impl VecSender {
         fn clear(&mut self) {
@@ -367,7 +408,9 @@ mod tests {
         type Commander = Vec<Command>;
 
         fn send_to<F>(&mut self, node: NodeId, f: F)
-            where F: FnOnce(&mut Self::Commander) -> () {
+        where
+            F: FnOnce(&mut Self::Commander) -> (),
+        {
             assert!(node < 4);
             f(&mut self.0[node as usize]);
         }

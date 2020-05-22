@@ -1,7 +1,7 @@
 use super::Ballot;
 use crate::config::NodeId;
-use either::Either;
 use bytes::Bytes;
+use either::Either;
 
 /// `PREPARE` message is the Phase 1a message from a proposer sent
 /// to acceptors to receive agreement to not accept ballots of lower value.
