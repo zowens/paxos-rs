@@ -44,11 +44,14 @@ extern crate test;
 extern crate tokio;
 extern crate tokio_codec;
 extern crate tokio_io;
+#[cfg(test)]
+extern crate lazy_static;
 
 pub mod config;
 mod master;
 pub mod messages;
 pub mod multipaxos;
+pub mod multi_paxos;
 mod net;
 pub mod paxos;
 mod proposals;
