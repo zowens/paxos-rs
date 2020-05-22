@@ -1,6 +1,6 @@
 use super::messages::*;
 use super::*;
-use config::NodeId;
+use crate::config::NodeId;
 use either::Either;
 use std::collections::HashMap;
 use std::mem;

@@ -3,7 +3,7 @@ mod messages;
 
 pub use self::instance::PaxosInstance;
 pub use self::messages::*;
-use config::NodeId;
+use crate::config::NodeId;
 use std::cmp::Ordering;
 
 /// Ballot numbering is an increasing number in order to order proposals

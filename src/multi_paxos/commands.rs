@@ -10,7 +10,7 @@ pub trait Sender {
     type Commander: Commander;
 
     /// Send a message to a single node
-    fn send_to<F>(&mut self, NodeId, F)
+    fn send_to<F>(&mut self, node: NodeId, command: F)
         where F: FnOnce(&mut Self::Commander) -> ();
 }
 
@@ -26,13 +26,13 @@ pub enum Command {
 }
 
 pub trait Commander {
-    fn proposal(&mut self, Bytes);
-    fn prepare(&mut self, Ballot);
-    fn promise(&mut self, NodeId, Slot, Ballot, Option<(Ballot, Bytes)>);
-    fn accept(&mut self, Slot, Ballot, Bytes);
-    fn reject(&mut self, NodeId, Ballot, Ballot);
-    fn accepted(&mut self, NodeId, Slot, Ballot);
-    fn resolution(&mut self, Slot, Ballot, Bytes);
+    fn proposal(&mut self, val: Bytes);
+    fn prepare(&mut self, bal: Ballot);
+    fn promise(&mut self, node: NodeId, slot: Slot, bal: Ballot, accepted: Option<(Ballot, Bytes)>);
+    fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes);
+    fn reject(&mut self, node: NodeId, proposed: Ballot, preempted: Ballot);
+    fn accepted(&mut self, node: NodeId, slot: Slot, bal: Ballot);
+    fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes);
 }
 
 impl<T> Commander for T
