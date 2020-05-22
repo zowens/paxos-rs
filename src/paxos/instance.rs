@@ -1,10 +1,10 @@
 use super::messages::*;
 use super::*;
 use crate::config::NodeId;
+use bytes::Bytes;
 use either::Either;
 use std::collections::HashMap;
 use std::mem;
-use bytes::Bytes;
 
 /// Encoding of the Proposer role's state machine
 #[derive(Debug)]
@@ -303,11 +303,7 @@ impl Acceptor {
     /// Handler for an ACCEPT message, which is sent from a proposer when a quorum
     /// for the Phase 1 PREPARE has been made from acceptors. Opposing ballots may still
     /// happen in Phase 2, in which case a REJECT is sent.
-    fn receive_accept(
-        &mut self,
-        peer: NodeId,
-        accept: Accept,
-    ) -> Either<Accepted, Reply<Reject>> {
+    fn receive_accept(&mut self, peer: NodeId, accept: Accept) -> Either<Accepted, Reply<Reject>> {
         let Accept(proposal, value) = accept;
         let opposing_ballot = self.promised.filter(|b| b > &proposal);
         match opposing_ballot {
@@ -384,7 +380,10 @@ struct Learner {
 impl Learner {
     /// Notice (ballot, value) pairs
     fn notice_value(&mut self, bal: Ballot, value: Bytes) {
-        if let LearnerState::AwaitQuorum { ref mut proposals, .. } = self.state {
+        if let LearnerState::AwaitQuorum {
+            ref mut proposals, ..
+        } = self.state
+        {
             let quorum = self.quorum;
             proposals.entry(bal).or_insert_with(|| ProposalStatus {
                 acceptors: QuorumSet::with_size(quorum),
@@ -449,7 +448,7 @@ impl Learner {
                 // insert the ACCEPTED as part of the ballot
                 debug!("Accepted {:?} for peer={}", proposal, peer);
                 match proposals.entry(proposal) {
-                    Occupied(ref mut entry) =>  {
+                    Occupied(ref mut entry) => {
                         let proposal_status = entry.get_mut();
                         proposal_status.acceptors.insert(peer);
                         // if learner has has quorum of ACCEPTED messages, transition to final
@@ -458,7 +457,7 @@ impl Learner {
                             return None;
                         }
                         proposal_status.value.clone()
-                    },
+                    }
                     Vacant(_) => {
                         warn!("Unknown value for ballot {:?}", proposal);
                         return None;
@@ -501,11 +500,11 @@ impl PaxosInstance {
         accepted: Option<PromiseValue>,
     ) -> PaxosInstance {
         let mut learner = Learner {
-                state: LearnerState::AwaitQuorum {
-                    proposals: HashMap::with_capacity(quorum * 2),
-                    acceptors: HashMap::with_capacity(quorum * 2),
-                },
-                quorum,
+            state: LearnerState::AwaitQuorum {
+                proposals: HashMap::with_capacity(quorum * 2),
+                acceptors: HashMap::with_capacity(quorum * 2),
+            },
+            quorum,
         };
         if let Some(PromiseValue(bal, val)) = accepted.clone() {
             learner.notice_value(bal, val);
@@ -674,11 +673,7 @@ impl PaxosInstance {
     }
 
     /// Handles ACCEPTED messages from acceptors.
-    pub fn receive_accepted(
-        &mut self,
-        peer: NodeId,
-        accepted: Accepted,
-    ) -> Option<Resolution> {
+    pub fn receive_accepted(&mut self, peer: NodeId, accepted: Accepted) -> Option<Resolution> {
         self.proposer.observe_ballot(accepted.0);
         self.learner.receive_accepted(peer, accepted)
     }
@@ -885,7 +880,10 @@ mod tests {
 
         let accept = paxos.receive_promise(
             3,
-            Promise(Ballot(101, 1), Some(PromiseValue(Ballot(90, 0), vec![0x4u8].into()))),
+            Promise(
+                Ballot(101, 1),
+                Some(PromiseValue(Ballot(90, 0), vec![0x4u8].into())),
+            ),
         );
         assert!(accept.is_none());
         assert_matches!(
@@ -900,7 +898,10 @@ mod tests {
 
         let accept = paxos.receive_promise(
             0,
-            Promise(Ballot(101, 1), Some(PromiseValue(Ballot(100, 0), vec![0x8u8].into()))),
+            Promise(
+                Ballot(101, 1),
+                Some(PromiseValue(Ballot(100, 0), vec![0x8u8].into())),
+            ),
         );
         assert!(accept.is_none());
         assert_matches!(
@@ -915,7 +916,10 @@ mod tests {
 
         let accept = paxos.receive_promise(
             2,
-            Promise(Ballot(101, 1), Some(PromiseValue(Ballot(99, 0), vec![0x9u8].into()))),
+            Promise(
+                Ballot(101, 1),
+                Some(PromiseValue(Ballot(99, 0), vec![0x9u8].into())),
+            ),
         );
         assert_matches!(
             accept,
@@ -1056,7 +1060,10 @@ mod tests {
             res.left().unwrap(),
             Reply {
                 reply_to: 1,
-                message: Promise(Ballot(103, 1), Some(PromiseValue(Ballot(102, 2), expected_value))),
+                message: Promise(
+                    Ballot(103, 1),
+                    Some(PromiseValue(Ballot(102, 2), expected_value))
+                ),
             }
         );
         assert_matches!(paxos.acceptor.promised, Some(Ballot(103, 1)));
@@ -1069,10 +1076,7 @@ mod tests {
         // acceptor allows ACCEPT without a promise
         let res = paxos.receive_accept(1, Accept(Ballot(101, 1), vec![0xee, 0xe0].into()));
         assert!(res.is_left());
-        assert_eq!(
-            res.left().unwrap(),
-            (Accepted(Ballot(101, 1)), None)
-        );
+        assert_eq!(res.left().unwrap(), (Accepted(Ballot(101, 1)), None));
         assert_matches!(paxos.acceptor.promised, Some(Ballot(101, 1)));
 
         // acceptor sends REJECT with ballot less than promised OR accepted

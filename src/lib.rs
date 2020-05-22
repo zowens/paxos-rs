@@ -28,9 +28,9 @@ extern crate either;
 #[macro_use]
 extern crate log;
 #[cfg(test)]
-extern crate test;
-#[cfg(test)]
 extern crate lazy_static;
+#[cfg(test)]
+extern crate test;
 
 pub mod config;
 mod multi_paxos;
@@ -38,5 +38,5 @@ mod paxos;
 mod statemachine;
 
 pub use config::Configuration;
-pub use statemachine::ReplicatedState;
 pub use multi_paxos::*;
+pub use statemachine::ReplicatedState;

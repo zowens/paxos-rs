@@ -1,7 +1,7 @@
 use super::Slot;
+use crate::config::NodeId;
 use crate::paxos::Ballot;
 use bytes::Bytes;
-use crate::config::NodeId;
 use std::iter::Extend;
 
 /// Sends commands to other replicas
@@ -11,7 +11,8 @@ pub trait Sender {
 
     /// Send a message to a single node
     fn send_to<F>(&mut self, node: NodeId, command: F)
-        where F: FnOnce(&mut Self::Commander) -> ();
+    where
+        F: FnOnce(&mut Self::Commander) -> ();
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -22,7 +23,7 @@ pub enum Command {
     Accept(Slot, Ballot, Bytes),
     Reject(NodeId, Ballot, Ballot),
     Accepted(NodeId, Slot, Ballot),
-    Resolution(Slot, Ballot, Bytes)
+    Resolution(Slot, Ballot, Bytes),
 }
 
 pub trait Commander {
@@ -36,12 +37,14 @@ pub trait Commander {
 }
 
 impl<T> Commander for T
-    where T: Extend<Command> {
+where
+    T: Extend<Command>,
+{
     fn proposal(&mut self, bytes: Bytes) {
         self.extend(Some(Command::Proposal(bytes)));
     }
 
-    fn prepare(&mut self, bal: Ballot){
+    fn prepare(&mut self, bal: Ballot) {
         self.extend(Some(Command::Prepare(bal)));
     }
 
@@ -73,7 +76,9 @@ impl Sender for EmptySender {
     type Commander = EmptyCommander;
 
     fn send_to<F>(&mut self, _: NodeId, f: F)
-        where F: FnOnce(&mut Self::Commander) -> () {
+    where
+        F: FnOnce(&mut Self::Commander) -> (),
+    {
         let mut commander = EmptyCommander::default();
         f(&mut commander);
     }
@@ -82,12 +87,11 @@ impl Sender for EmptySender {
 #[derive(Default)]
 pub struct EmptyCommander;
 impl Commander for EmptyCommander {
-    fn proposal(&mut self, _: Bytes){}
-    fn prepare(&mut self, _: Ballot){}
-    fn promise(&mut self, _: NodeId, _: Slot, _: Ballot, _: Option<(Ballot, Bytes)>){}
-    fn accept(&mut self, _: Slot, _: Ballot, _: Bytes){}
-    fn reject(&mut self, _: NodeId, _: Ballot, _: Ballot){}
-    fn accepted(&mut self, _: NodeId, _: Slot, _: Ballot){}
-    fn resolution(&mut self, _: Slot, _: Ballot, _: Bytes){}
+    fn proposal(&mut self, _: Bytes) {}
+    fn prepare(&mut self, _: Ballot) {}
+    fn promise(&mut self, _: NodeId, _: Slot, _: Ballot, _: Option<(Ballot, Bytes)>) {}
+    fn accept(&mut self, _: Slot, _: Ballot, _: Bytes) {}
+    fn reject(&mut self, _: NodeId, _: Ballot, _: Ballot) {}
+    fn accepted(&mut self, _: NodeId, _: Slot, _: Ballot) {}
+    fn resolution(&mut self, _: Slot, _: Ballot, _: Bytes) {}
 }
-
