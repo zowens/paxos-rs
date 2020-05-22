@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 /// Ballot numbering is an increasing number in order to order proposals
 /// across multiple nodes. Ballots are unique in that ballot numbers between
 /// nodes are unique and it is algorithmically increasing per node.
-#[derive(Serialize, Deserialize, PartialEq, Hash, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Hash, Eq, Clone, Copy, Debug)]
 pub struct Ballot(pub u32, pub NodeId);
 
 impl Ballot {
