@@ -1,4 +1,5 @@
-use super::{Ballot, NodeId};
+use super::Ballot;
+use crate::config::NodeId;
 use either::Either;
 use bytes::Bytes;
 
