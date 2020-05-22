@@ -27,7 +27,6 @@ extern crate bytes;
 extern crate either;
 #[macro_use]
 extern crate log;
-extern crate rand;
 #[cfg(test)]
 extern crate test;
 #[cfg(test)]
