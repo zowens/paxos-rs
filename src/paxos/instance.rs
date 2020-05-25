@@ -54,7 +54,7 @@ impl ProposerState {
 /// Phase 1. Once it has received a quorum, it will move to Phase 2 in which is will
 /// potentially send an ACCEPT message with a value from the acceptor with the highest
 /// accepted value already seen (key to the Paxos algorithm)
-struct Proposer {
+pub struct Proposer {
     /// State of the proposer state machine
     state: ProposerState,
     /// Highest seen ballot thus far from any peer
@@ -101,14 +101,6 @@ impl Proposer {
         debug!("Starting prepare with {:?}", new_ballot);
 
         Prepare(new_ballot)
-    }
-
-    /// Revokes leadership status
-    fn revoke_leadership(&mut self) {
-        if let ProposerState::Leader { .. } = self.state {
-            info!("Revoking Phase 1 quorum from Proposer");
-            self.state = ProposerState::Empty;
-        }
     }
 
     /// Proposes a value once Phase 1 is completed. It is not guaranteed that the value will
@@ -259,7 +251,7 @@ impl Proposer {
 }
 
 /// Encoding of Acceptor (persistent Paxos memory) role
-struct Acceptor {
+pub struct Acceptor {
     /// last promised ballot within this instance
     promised: Option<Ballot>,
     /// last accepted ballot/value pair within this instance
@@ -267,6 +259,13 @@ struct Acceptor {
 }
 
 impl Acceptor {
+    pub fn new(promised: Option<Ballot>) -> Acceptor {
+        Acceptor {
+            promised,
+            accepted: None,
+        }
+    }
+
     /// Handler for a PREPARE message sent from a proposer. The result is either a PROMISE
     /// to the proposer to not accept ballots > proposal or a REJECT if a ballot has been
     /// promised with a ballot > proposal.
@@ -358,6 +357,9 @@ enum LearnerState {
         /// holds mapping of acceptor's last ballot in order to Reject
         /// previous ballot acceptance
         acceptors: HashMap<NodeId, Ballot>,
+
+        /// Size of quorum
+        quorum: usize,
     },
     /// A final value has been chosen by a quorum of acceptors
     Final {
@@ -370,26 +372,62 @@ enum LearnerState {
 
 /// Handler for state transitions for the Learner role. A Paxos Learner listens
 /// for ACCEPTED messages in order to determine quorum for the final value.
-struct Learner {
+pub struct Learner {
     /// state of the learner (AwaitQuorum or Final)
     state: LearnerState,
-    /// Size of quorum
-    quorum: usize,
 }
 
 impl Learner {
+    pub fn new(quorum: usize) -> Learner {
+        Learner {
+            state: LearnerState::AwaitQuorum {
+                proposals: HashMap::new(),
+                acceptors: HashMap::new(),
+                quorum,
+            },
+        }
+    }
+
     /// Notice (ballot, value) pairs
     fn notice_value(&mut self, bal: Ballot, value: Bytes) {
         if let LearnerState::AwaitQuorum {
-            ref mut proposals, ..
+            ref mut proposals, quorum, ..
         } = self.state
         {
-            let quorum = self.quorum;
+            let quorum = quorum;
             proposals.entry(bal).or_insert_with(|| ProposalStatus {
                 acceptors: QuorumSet::with_size(quorum),
                 value,
             });
         }
+    }
+
+    /// Shows the resolution, if available
+    pub fn resolution(&self) -> Option<(Ballot, Bytes)> {
+        if let LearnerState::Final { accepted, ref value } = self.state {
+            Some((accepted, value.clone()))
+        } else {
+            None
+        }
+    }
+
+    /// Indicator of the learner considering the instance resolved to a value
+    pub fn resolved(&self) -> bool {
+        if let LearnerState::Final { .. } = self.state {
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resolves a value within the learner state
+    pub fn resolve(&mut self, bal: Ballot, value: Bytes) {
+        assert!(!self.resolved());
+
+        self.state = LearnerState::Final {
+            accepted: bal,
+            value,
+        };
     }
 
     /// Handles ACCEPTED messages from acceptors.
@@ -403,6 +441,7 @@ impl Learner {
             LearnerState::AwaitQuorum {
                 ref mut proposals,
                 ref mut acceptors,
+                quorum,
             } => {
                 use std::collections::hash_map::Entry::*;
 
@@ -503,8 +542,8 @@ impl PaxosInstance {
             state: LearnerState::AwaitQuorum {
                 proposals: HashMap::with_capacity(quorum * 2),
                 acceptors: HashMap::with_capacity(quorum * 2),
+                quorum,
             },
-            quorum,
         };
         if let Some(PromiseValue(bal, val)) = accepted.clone() {
             learner.notice_value(bal, val);
@@ -519,39 +558,6 @@ impl PaxosInstance {
             },
             acceptor: Acceptor { promised, accepted },
             learner,
-        }
-    }
-
-    /// Creates an instance for which the current node is the leader.
-    pub fn with_leadership(
-        current: NodeId,
-        quorum: usize,
-        previous_ballot: Ballot,
-    ) -> PaxosInstance {
-        // TODO: if `accepted` is Some, add to learner
-
-        PaxosInstance {
-            proposer: Proposer {
-                state: ProposerState::Leader {
-                    proposal: previous_ballot,
-                    value: None,
-                    rejections: QuorumSet::with_size(quorum),
-                },
-                highest: Some(previous_ballot),
-                current,
-                quorum,
-            },
-            acceptor: Acceptor {
-                promised: Some(previous_ballot),
-                accepted: None,
-            },
-            learner: Learner {
-                state: LearnerState::AwaitQuorum {
-                    proposals: HashMap::with_capacity(quorum * 2),
-                    acceptors: HashMap::with_capacity(quorum * 2),
-                },
-                quorum,
-            },
         }
     }
 
@@ -606,10 +612,6 @@ impl PaxosInstance {
         }
     }
 
-    /// Revokes Phase 1 quorum from the proposer when a master lease has expired.
-    pub fn revoke_leadership(&mut self) {
-        self.proposer.revoke_leadership();
-    }
 
     /// Handler for a PROMISE from a peer. An ACCEPT message is returned if quorum is detected.
     pub fn receive_promise(&mut self, peer: NodeId, promise: Promise) -> Option<Accept> {
@@ -1117,6 +1119,7 @@ mod tests {
             LearnerState::AwaitQuorum {
                 ref acceptors,
                 ref proposals,
+                ..
             } if acceptors.contains_key(&1) && proposals.contains_key(&Ballot(100, 0))
         );
 
@@ -1128,6 +1131,7 @@ mod tests {
             LearnerState::AwaitQuorum {
                 ref acceptors,
                 ref proposals,
+                ..
             }
             if *acceptors.get(&1).unwrap() == Ballot(100, 0) &&
                !proposals.contains_key(&Ballot(90, 0))

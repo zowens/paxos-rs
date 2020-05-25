@@ -1,7 +1,7 @@
 mod instance;
 mod messages;
 
-pub use self::instance::PaxosInstance;
+pub use self::instance::{PaxosInstance, Acceptor, Learner, Proposer};
 pub use self::messages::*;
 use crate::config::NodeId;
 use std::cmp::Ordering;
