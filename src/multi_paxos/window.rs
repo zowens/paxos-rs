@@ -2,9 +2,9 @@ use super::Slot;
 use bytes::Bytes;
 use crate::paxos::{self, Ballot};
 use std::ops::Range;
+use std::cmp::max;
 
 struct ResolvedSlot(Ballot, Bytes);
-struct OpenSlot(paxos::Acceptor, paxos::Learner);
 
 /// Tracking for open and decided slots for a paxos replica
 pub struct SlotWindow {
@@ -12,8 +12,9 @@ pub struct SlotWindow {
     ///
     /// Some slots may be decided, but the open_min_slot is quaranteed
     /// to be still undecided.
-    open: Vec<OpenSlot>,
+    open: Vec<paxos::Acceptor>,
     open_min_slot: Slot,
+    max_promised: Option<Ballot>,
 
     /// Slots that have been decided.
     decided: Vec<ResolvedSlot>,
@@ -26,12 +27,13 @@ impl SlotWindow {
     /// New tracker for slots
     pub fn new(quorum: usize) -> SlotWindow {
         let mut open = Vec::new();
-        // put in oe slot for the minimal open
-        open.push(OpenSlot(paxos::Acceptor::new(None), paxos::Learner::new(quorum)));
+        // add the first slot
+        open.push(paxos::Acceptor::new(None, quorum));
 
         SlotWindow {
             open,
             open_min_slot: 0,
+            max_promised: None,
             decided: Vec::new(),
             quorum,
         }
@@ -48,7 +50,7 @@ impl SlotWindow {
             assert!(open_index < self.open.len());
 
             {
-                if let Some((bal, val)) = &self.open[open_index].1.resolution() {
+                if let Some((bal, val)) = &self.open[open_index].resolution() {
                     return SlotMutRef::Resolved(*bal, val.clone());
                 }
             }
@@ -62,6 +64,24 @@ impl SlotWindow {
                 slot,
                 window: self,
             })
+        }
+    }
+
+    /// Opens the next slot
+    pub fn next_slot(&mut self) -> OpenSlotMutRef {
+        if self.open.last().is_some() && !self.open.last().unwrap().highest_value().is_some() {
+            return OpenSlotMutRef {
+                i: self.open_min_slot as usize + self.open.len() - 1,
+                window: self,
+            };
+        }
+
+
+        let i = self.open.len();
+        self.open.push(paxos::Acceptor::new(self.max_promised, self.quorum));
+        OpenSlotMutRef {
+            i,
+            window: self,
         }
     }
 
@@ -79,7 +99,7 @@ impl SlotWindow {
     fn fill_decisions(&mut self) {
         // find the range of resolved slots
         let last_resolved = self.open.iter()
-            .take_while(|slot| slot.1.resolution().is_some())
+            .take_while(|slot| slot.resolution().is_some())
             .enumerate()
             .map(|(i, _)| i)
             .last();
@@ -89,7 +109,7 @@ impl SlotWindow {
             self.open_min_slot += (i as u64) + 1;
             let resolutions = self.open.drain(0..=i)
                 .map(|open_slot| {
-                    let (bal, val) = open_slot.1.resolution().unwrap();
+                    let (bal, val) = open_slot.resolution().unwrap();
                     ResolvedSlot(bal, val.clone())
                 });
             self.decided.extend(resolutions);
@@ -103,9 +123,9 @@ impl SlotWindow {
         }
 
         let quorum = self.quorum;
+        let last_promised = self.max_promised;
         self.open.extend((self.open_min_slot + self.open.len() as u64..=max_slot)
-            // TODO: ... propagate last promised?
-            .map(|_| OpenSlot(paxos::Acceptor::new(None), paxos::Learner::new(quorum))));
+            .map(|_| paxos::Acceptor::new(last_promised, quorum)));
     }
 }
 
@@ -116,17 +136,19 @@ pub struct OpenSlotMutRef<'a> {
 }
 
 impl<'a> OpenSlotMutRef<'a> {
-    pub fn acceptor(&mut self) -> &mut paxos::Acceptor {
-        &mut self.window.open[self.i].0
+    pub fn slot(&self) -> Slot {
+        self.i as Slot + self.window.open_min_slot
     }
 
-    pub fn learner(&mut self) -> &mut paxos::Learner {
-        &mut self.window.open[self.i].1
+    pub fn acceptor(&mut self) -> &mut paxos::Acceptor {
+        &mut self.window.open[self.i]
     }
 }
 
 impl<'a> Drop for OpenSlotMutRef<'a> {
     fn drop(&mut self) {
+        let acceptor_promised = self.acceptor().promised();
+        self.window.max_promised = max(self.window.max_promised, acceptor_promised);
         self.window.fill_decisions();
     }
 }
@@ -222,7 +244,7 @@ mod tests {
         });
 
         {
-            window.slot_mut(2).unwrap_empty().fill().learner().resolve(Ballot(0, 0), "123".into());
+            window.slot_mut(2).unwrap_empty().fill().acceptor().resolve(Ballot(0, 0), "123".into());
         }
 
         assert_eq!(0, window.open_min_slot);
@@ -230,7 +252,7 @@ mod tests {
         assert_eq!((0..3), window.open_range());
 
         {
-            window.slot_mut(0).unwrap_open().learner().resolve(Ballot(1,1), "456".into());
+            window.slot_mut(0).unwrap_open().acceptor().resolve(Ballot(1,1), "456".into());
         }
 
 
@@ -239,7 +261,7 @@ mod tests {
         assert_eq!((1..3), window.open_range());
 
         {
-            window.slot_mut(1).unwrap_open().learner().resolve(Ballot(10,3), "789".into());
+            window.slot_mut(1).unwrap_open().acceptor().resolve(Ballot(10,3), "789".into());
         }
 
         assert_eq!(3, window.open_min_slot);

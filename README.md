@@ -13,13 +13,13 @@ Library encapsulating Multi-Decree Paxos and variants in Rust. The core algorith
 - [X] Paxos Algorithm
     - [X] Core algorithm
     - [X] Distinguished Proposer
+    - [X] Distinguished Learner
     - [ ] Flexible Quorums
-    - [ ] Pipelining
+    - [X] Pipelining
     - [ ] Persistent Storage
     - [ ] Learner/observers
     - [ ] Read leases
     - [ ] Reconfiguration
-    - [ ] Learners ("observers")
 - [ ] Generalized Replicated State Machine
     - [ ] Mutable Register
     - [ ] Asynchronous State Machine
@@ -29,6 +29,7 @@ Library encapsulating Multi-Decree Paxos and variants in Rust. The core algorith
     - [ ] Mencius
     - [ ] WPaxos
     - [ ] SDPaxos
+    - [ ] Pig Paxos
 
 ## References
 * [Paxos Variants](http://paxos.systems/variants.html#mencius)
