@@ -4,6 +4,9 @@ use crate::paxos::Ballot;
 use bytes::Bytes;
 use std::iter::Extend;
 
+/// Tuple containing the the slot number, ballot and value
+pub type SlottedValue = (Slot, Ballot, Bytes);
+
 /// Sends commands to other replicas
 pub trait Sender {
     /// Commander type used to send messages to other instances
@@ -19,7 +22,7 @@ pub trait Sender {
 pub enum Command {
     Proposal(Bytes),
     Prepare(Ballot),
-    Promise(NodeId, Slot, Ballot, Option<(Ballot, Bytes)>),
+    Promise(NodeId, Ballot, Vec<(Slot, Ballot, Bytes)>),
     Accept(Slot, Ballot, Bytes),
     Reject(NodeId, Ballot, Ballot),
     Accepted(NodeId, Slot, Ballot),
@@ -29,7 +32,7 @@ pub enum Command {
 pub trait Commander {
     fn proposal(&mut self, val: Bytes);
     fn prepare(&mut self, bal: Ballot);
-    fn promise(&mut self, node: NodeId, slot: Slot, bal: Ballot, accepted: Option<(Ballot, Bytes)>);
+    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<SlottedValue>);
     fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes);
     fn reject(&mut self, node: NodeId, proposed: Ballot, preempted: Ballot);
     fn accepted(&mut self, node: NodeId, slot: Slot, bal: Ballot);
@@ -48,8 +51,8 @@ where
         self.extend(Some(Command::Prepare(bal)));
     }
 
-    fn promise(&mut self, node: NodeId, slot: Slot, bal: Ballot, val: Option<(Ballot, Bytes)>) {
-        self.extend(Some(Command::Promise(node, slot, bal, val)));
+    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<SlottedValue>) {
+        self.extend(Some(Command::Promise(node, bal, accepted)));
     }
 
     fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
@@ -89,7 +92,7 @@ pub struct EmptyCommander;
 impl Commander for EmptyCommander {
     fn proposal(&mut self, _: Bytes) {}
     fn prepare(&mut self, _: Ballot) {}
-    fn promise(&mut self, _: NodeId, _: Slot, _: Ballot, _: Option<(Ballot, Bytes)>) {}
+    fn promise(&mut self, _: NodeId, _: Ballot, _: Vec<SlottedValue>) {}
     fn accept(&mut self, _: Slot, _: Ballot, _: Bytes) {}
     fn reject(&mut self, _: NodeId, _: Ballot, _: Ballot) {}
     fn accepted(&mut self, _: NodeId, _: Slot, _: Ballot) {}

@@ -32,9 +32,11 @@ impl Configuration {
         }
     }
 
-    /// Size of quorum
-    pub fn quorum_size(&self) -> usize {
-        1 + (self.peers.len() / 2)
+    /// Size of phase 1 and phase 2 quorums.
+    pub fn quorum_size(&self) -> (usize, usize) {
+        // TODO: allow flexible quorum
+        let size = 1 + (self.peers.len() / 2);
+        (size, size)
     }
 
     /// Current node identifier

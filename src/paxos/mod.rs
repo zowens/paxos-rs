@@ -1,8 +1,8 @@
-mod instance;
-mod messages;
+mod acceptor;
+mod proposer;
 
-pub use self::instance::{PaxosInstance, Acceptor, Learner, Proposer};
-pub use self::messages::*;
+pub use self::acceptor::{Acceptor, AcceptResponse, PrepareResponse};
+pub use self::proposer::{Proposer, ProposerStatus};
 use crate::config::NodeId;
 use std::cmp::Ordering;
 
@@ -70,6 +70,11 @@ impl QuorumSet {
         QuorumSet {
             values: vec![None; size].into_boxed_slice(),
         }
+    }
+
+    /// Size of the quorum
+    pub fn len(&self) -> usize {
+        self.values.len()
     }
 
     /// Flag indicating whether quorum has been reached.

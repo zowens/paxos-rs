@@ -20,11 +20,7 @@
 //! unimplemented!("TODO: finish example");
 //! # }
 //! ```
-#[cfg(test)]
-#[macro_use]
-extern crate assert_matches;
 extern crate bytes;
-extern crate either;
 #[macro_use]
 extern crate log;
 #[cfg(test)]
