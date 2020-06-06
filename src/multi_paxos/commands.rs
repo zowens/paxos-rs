@@ -29,13 +29,36 @@ pub enum Command {
     Resolution(Slot, Ballot, Bytes),
 }
 
+/// Receiver of Paxos commands.
 pub trait Commander {
+    /// Receive a proposal
     fn proposal(&mut self, val: Bytes);
+
+    /// Receive a Phase 1a PREPARE message containing the proposed ballot
     fn prepare(&mut self, bal: Ballot);
+
+    /// Receive a Phase 1b PROMISE message containing the node
+    /// that generated the promise, the ballot promised and all accepted
+    /// values within the open window.
     fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<SlottedValue>);
+
+    /// Receive a Phase 2a ACCEPT message that contains the the slot, proposed
+    /// ballot and value of the proposal. The ballot contains the node of
+    /// the leader of the slot.
     fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes);
+
+    /// Receives a REJECT message from a peer containing a higher ballot that
+    /// preempts either a Phase 1a (PREPARE) for Phase 2a (ACCEPT) message.
     fn reject(&mut self, node: NodeId, proposed: Ballot, preempted: Ballot);
+
+    /// Receives a Phase 2b ACCEPTED message containing the acceptor that has accepted
+    /// the slot's proposal along with the ballot that generated the slot.
     fn accepted(&mut self, node: NodeId, slot: Slot, bal: Ballot);
+
+    /// Receives a final resolution of a slot that has been accepted by a majority
+    /// of acceptors.
+    ///
+    /// NOTE: Resolutions may arrive out-of-order. No guarantees are made on slot order.
     fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes);
 }
 
@@ -70,31 +93,4 @@ where
     fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
         self.extend(Some(Command::Resolution(slot, bal, val)));
     }
-}
-
-#[derive(Default)]
-pub struct EmptySender;
-
-impl Sender for EmptySender {
-    type Commander = EmptyCommander;
-
-    fn send_to<F>(&mut self, _: NodeId, f: F)
-    where
-        F: FnOnce(&mut Self::Commander) -> (),
-    {
-        let mut commander = EmptyCommander::default();
-        f(&mut commander);
-    }
-}
-
-#[derive(Default)]
-pub struct EmptyCommander;
-impl Commander for EmptyCommander {
-    fn proposal(&mut self, _: Bytes) {}
-    fn prepare(&mut self, _: Ballot) {}
-    fn promise(&mut self, _: NodeId, _: Ballot, _: Vec<SlottedValue>) {}
-    fn accept(&mut self, _: Slot, _: Ballot, _: Bytes) {}
-    fn reject(&mut self, _: NodeId, _: Ballot, _: Ballot) {}
-    fn accepted(&mut self, _: NodeId, _: Slot, _: Ballot) {}
-    fn resolution(&mut self, _: Slot, _: Ballot, _: Bytes) {}
 }

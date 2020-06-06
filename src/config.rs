@@ -8,7 +8,6 @@ use std::net::SocketAddr;
 pub type NodeId = u32;
 
 /// Configuration holds the state of the membership of the cluster.
-/// TODO: add reconfiguration
 #[derive(Clone)]
 pub struct Configuration {
     current: (NodeId, SocketAddr),
