@@ -28,11 +28,17 @@ extern crate lazy_static;
 #[cfg(test)]
 extern crate test;
 
-pub mod config;
+mod config;
 mod multi_paxos;
 mod paxos;
 mod statemachine;
 
-pub use config::Configuration;
-pub use multi_paxos::*;
+pub use config::{NodeId, Configuration};
+pub use multi_paxos::{
+    Replica,
+    Sender,
+    SlottedValue,
+    Commander,
+};
 pub use statemachine::ReplicatedState;
+pub use crate::paxos::Ballot;
