@@ -1,27 +1,25 @@
-use crate::{Ballot, NodeId, Slot, SlottedValue};
+use crate::{Ballot, NodeId, Slot, SlottedValue, ReplicatedState};
 use bytes::Bytes;
+
+#[cfg(test)]
 use std::iter::Extend;
 
-/// Sends commands to other replicas
+/// Sends commands to other replicas in addition to applying
+/// resolved commands at the current replica
 pub trait Sender {
     /// Commander type used to send messages to other instances
     type Commander: Commander;
+
+    /// The state machine used by this replica
+    type StateMachine: ReplicatedState;
 
     /// Send a message to a single node
     fn send_to<F>(&mut self, node: NodeId, command: F)
     where
         F: FnOnce(&mut Self::Commander) -> ();
-}
 
-#[derive(PartialEq, Eq, Debug)]
-pub enum Command {
-    Proposal(Bytes),
-    Prepare(Ballot),
-    Promise(NodeId, Ballot, Vec<(Slot, Ballot, Bytes)>),
-    Accept(Slot, Ballot, Bytes),
-    Reject(NodeId, Ballot, Ballot),
-    Accepted(NodeId, Slot, Ballot),
-    Resolution(Slot, Ballot, Bytes),
+    /// Resolves the state machine to apply values.
+    fn state_machine(&mut self) -> &mut Self::StateMachine;
 }
 
 /// Receiver of Paxos commands.
@@ -57,6 +55,19 @@ pub trait Commander {
     fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes);
 }
 
+#[derive(PartialEq, Eq, Debug)]
+#[cfg(test)]
+pub enum Command {
+    Proposal(Bytes),
+    Prepare(Ballot),
+    Promise(NodeId, Ballot, Vec<(Slot, Ballot, Bytes)>),
+    Accept(Slot, Ballot, Bytes),
+    Reject(NodeId, Ballot, Ballot),
+    Accepted(NodeId, Slot, Ballot),
+    Resolution(Slot, Ballot, Bytes),
+}
+
+#[cfg(test)]
 impl<T> Commander for T
 where
     T: Extend<Command>,
