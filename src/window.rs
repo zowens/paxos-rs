@@ -41,15 +41,25 @@ impl SlotWindow {
 
     /// Mutable reference to a slot
     pub fn slot_mut(&mut self, slot: Slot) -> SlotMutRef {
-        if slot < self.open_min_slot {
-            assert!((slot as usize) < self.decided.len());
+        assert!(self.open_min_slot as usize >= self.decided.len());
+        let min_slot = self.open_min_slot - self.decided.len() as Slot;
+
+        if slot < min_slot {
+            // we've already executed this slot
+            SlotMutRef::ResolutionTruncated
+        } else if slot < self.open_min_slot {
+            // slot is decided, and we have that decision as non-executed
             let ResolvedSlot(ballot, value) = &self.decided[slot as usize];
             SlotMutRef::Resolved(*ballot, value.clone())
         } else if slot < self.open_min_slot + self.open.len() as Slot {
+            // slot is in the already opened range
+
             let open_index = (slot - self.open_min_slot) as usize;
             assert!(open_index < self.open.len());
 
             {
+                // check to see if it's actually resolved, and then consider
+                // it a Resolved slot rather than open slot
                 if let Some((bal, val)) = &self.open[open_index].resolution() {
                     return SlotMutRef::Resolved(*bal, val.clone());
                 }
@@ -60,6 +70,7 @@ impl SlotWindow {
                 window: self,
             })
         } else {
+            // slot has not yet been opened
             SlotMutRef::Empty(EmptySlotRef { slot, window: self })
         }
     }
@@ -88,6 +99,13 @@ impl SlotWindow {
             start: self.open_min_slot,
             end: self.open_min_slot + self.open.len() as Slot,
         }
+    }
+
+    /// Removes decisions for application in the state machine
+    pub fn drain_decisions<'a>(&'a mut self) -> impl Iterator<Item=(Slot, Bytes)> + 'a {
+        assert!(self.open_min_slot as usize >= self.decided.len());
+        let min_slot = self.open_min_slot - self.decided.len() as Slot;
+        self.decided.drain(..).enumerate().map(move |(i, ResolvedSlot(_, val))| (i as Slot + min_slot, val))
     }
 
     fn fill_decisions(&mut self) {
@@ -158,6 +176,9 @@ pub enum SlotMutRef<'a> {
     Empty(EmptySlotRef<'a>),
     /// Slot is resolved with a value
     Resolved(Ballot, Bytes),
+    /// Slot is resolved and the command value has already
+    /// been executed.
+    ResolutionTruncated,
 }
 
 /// Reference to an empty slot that can be filled on demand
@@ -191,7 +212,7 @@ impl<'a> SlotMutRef<'a> {
     pub fn unwrap_empty(self) -> EmptySlotRef<'a> {
         match self {
             SlotMutRef::Empty(empty) => empty,
-            _ => panic!("Slow was resolved when empty expected"),
+            _ => panic!("Slot was resolved when empty expected"),
         }
     }
 
@@ -297,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    pub fn test_open_one() {
+    fn open_one() {
         let mut window = SlotWindow::new(2);
         {
             window.slot_mut(1).unwrap_empty().fill();
@@ -309,6 +330,43 @@ mod tests {
                 SlotMutRef::Open(ref mut slot) => !slot.acceptor().highest_value().is_some(),
                 _ => false,
             });
+        }
+    }
+
+    #[test]
+    fn drain() {
+        let mut window = SlotWindow::new(2);
+        {
+            window.slot_mut(1).unwrap_empty().fill().acceptor().resolve(Ballot(0, 5), "1".into())
+        }
+
+        {
+            window.slot_mut(2).unwrap_empty().fill().acceptor().resolve(Ballot(0, 5), "2".into())
+        }
+
+        {
+            assert_eq!(0, window.drain_decisions().count());
+        }
+
+        {
+            window.slot_mut(0).unwrap_open().acceptor().resolve(Ballot(0, 5), "0".into())
+        }
+
+        {
+            let decisions = window.drain_decisions().collect::<Vec<_>>();
+            assert_eq!(3, decisions.len());
+            assert_eq!(vec![(0, "0".into()), (1, "1".into()), (2, "2".into())], decisions);
+        }
+
+        for i in 0..3 {
+            assert!(match window.slot_mut(i) {
+                SlotMutRef::ResolutionTruncated => true,
+                _ => false,
+            })
+        }
+
+        {
+            assert_eq!(0, window.drain_decisions().count());
         }
     }
 }

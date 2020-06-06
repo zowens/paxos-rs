@@ -2,7 +2,7 @@ use crate::acceptor::{AcceptResponse, PrepareResponse};
 use crate::commands::*;
 use crate::proposer::{Proposer, ProposerStatus};
 use crate::window::{SlotMutRef, SlotWindow};
-use crate::{config::Configuration, Ballot, NodeId, Slot, SlottedValue};
+use crate::{Configuration, Ballot, NodeId, Slot, SlottedValue, ReplicatedState};
 use bytes::Bytes;
 use std::mem;
 
@@ -18,8 +18,6 @@ pub struct Replica<S> {
 }
 
 impl<S: Sender> Replica<S> {
-    // TODO: add overload for start with state snapshot
-
     /// Replica creation from a sender and starting configuration
     pub fn new(sender: S, config: Configuration) -> Replica<S> {
         let (p1_quorum, p2_quorum) = config.quorum_size();
@@ -34,7 +32,7 @@ impl<S: Sender> Replica<S> {
     }
 
     /// Replace the sender with an alertnate implementation
-    pub fn sender<A>(self, sender: A) -> Replica<A> {
+    pub fn with_sender<A>(self, sender: A) -> Replica<A> {
         Replica {
             sender: sender,
             config: self.config,
@@ -42,6 +40,16 @@ impl<S: Sender> Replica<S> {
             proposal_queue: self.proposal_queue,
             window: self.window,
         }
+    }
+
+    /// Mutable reference to the sender
+    pub fn sender_mut(&mut self) -> &mut S {
+        &mut self.sender
+    }
+
+    /// Reference to the sender
+    pub fn sender(&self) -> &S {
+        &self.sender
     }
 
     /// Broadcast ACCEPT messages once the proposer has phase 1 quorum
@@ -106,6 +114,15 @@ impl<S: Sender> Replica<S> {
                     c.proposal(proposal);
                 }
             });
+        }
+    }
+
+    /// Executes commands that have been decided.
+    fn execute_decisions(&mut self) {
+        for (slot, val) in self.window.drain_decisions() {
+            if val.len() > 0 {
+                self.sender.state_machine().execute(slot, val);
+            }
         }
     }
 
@@ -186,13 +203,14 @@ impl<S: Sender> Commander for Replica<S> {
                     // TODO: is this the right thing to do here?????
                     accepted.push((slot, bal, val));
                 }
+
                 SlotMutRef::Empty(_) => {
                     warn!(
                         "Empty slot {} detected in the middle of the open range",
                         slot
                     );
-                    continue;
                 }
+                SlotMutRef::ResolutionTruncated => unreachable!("Cannot be resolved in the middle of the open range"),
             }
         }
         self.sender
@@ -277,18 +295,23 @@ impl<S: Sender> Commander for Replica<S> {
         if let Some((bal, val)) = resolution {
             self.broadcast(|c| c.resolution(slot, bal, val.clone()));
         }
+
+        // execute resolved decisions
+        self.execute_decisions();
     }
 
     fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
         self.proposer.observe_ballot(bal);
 
+        // resolve the slot
         match self.window.slot_mut(slot) {
             SlotMutRef::Empty(empty_slot) => empty_slot.fill().acceptor().resolve(bal, val),
             SlotMutRef::Open(ref mut open) => open.acceptor().resolve(bal, val),
-            SlotMutRef::Resolved(_, _) => {
-                return;
-            }
+            _ => {},
         }
+
+        // execute resolved decisions
+        self.execute_decisions();
     }
 }
 
@@ -297,6 +320,7 @@ mod tests {
     use super::*;
     use lazy_static::lazy_static;
     use std::ops::Index;
+    use crate::ReplicatedState;
 
     lazy_static! {
         static ref CONFIG: Configuration = Configuration::new(
@@ -327,8 +351,6 @@ mod tests {
         assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[3]);
         replica.sender.clear();
 
-        // for now, drop proposals while we have an instance in-flight
-        // TODO: this should advance to another instance
         replica.proposal("456".into());
         assert_eq!(
             Some(Ballot(0, 4)),
@@ -339,7 +361,7 @@ mod tests {
         assert!(replica.sender[2].is_empty());
         assert!(replica.sender[3].is_empty());
 
-        // TODO: test proposal after being established as leader
+        assert!(replica.sender.resolutions().is_empty());
     }
 
     #[test]
@@ -357,6 +379,8 @@ mod tests {
         assert!(replica.sender[1].is_empty());
         assert!(replica.sender[2].is_empty());
         assert_eq!(&[Command::Proposal("123".into())], &replica.sender[3]);
+
+        assert!(replica.sender.resolutions().is_empty());
     }
 
     #[test]
@@ -389,6 +413,8 @@ mod tests {
             &replica.sender[2]
         );
         assert!(&replica.sender[3].is_empty());
+
+        assert!(replica.sender.resolutions().is_empty());
     }
 
     #[test]
@@ -413,6 +439,8 @@ mod tests {
                 &replica.sender[i]
             )
         });
+
+        assert!(replica.sender.resolutions().is_empty());
     }
 
     #[test]
@@ -440,6 +468,8 @@ mod tests {
                 &replica.sender[i]
             )
         });
+
+        assert!(replica.sender.resolutions().is_empty());
     }
 
     #[test]
@@ -469,6 +499,8 @@ mod tests {
                 &replica.sender[i]
             );
         });
+
+        assert!(replica.sender.resolutions().is_empty());
     }
 
     #[test]
@@ -505,6 +537,8 @@ mod tests {
             replica.proposer.highest_observed_ballot()
         );
         assert_eq!(&[Command::Accepted(4, 0, Ballot(9, 2))], &replica.sender[2]);
+
+        assert!(replica.sender.resolutions().is_empty());
     }
 
     #[test]
@@ -525,6 +559,8 @@ mod tests {
         assert_eq!(ProposerStatus::Follower, replica.proposer.status());
         assert_eq!(&[Command::Proposal("123".into())], &replica.sender[3]);
         (0..3).for_each(|i| assert!(replica.sender[i].is_empty()));
+
+        assert!(replica.sender.resolutions().is_empty());
     }
 
     #[test]
@@ -551,6 +587,8 @@ mod tests {
                 &replica.sender[i]
             )
         });
+
+        assert_eq!(&[(0, "123".into())], replica.sender.resolutions());
     }
 
     #[test]
@@ -563,16 +601,31 @@ mod tests {
             SlotMutRef::Resolved(Ballot(1, 2), val) if val == "123" => true,
             _ => false,
         });
+
+        replica.resolution(1, Ballot(1, 2), Bytes::default());
+        replica.resolution(0, Ballot(1, 2), "000".into());
+        assert_eq!(&[(0, "000".into())], replica.sender.resolutions());
+
+        // fill hole 1,2
+        replica.resolution(1, Ballot(1, 2), Bytes::default());
+        replica.resolution(2, Ballot(1, 2), Bytes::default());
+        replica.resolution(3, Ballot(1, 2), "3".into());
+
+        assert_eq!(&[(0, "000".into()), (3, "3".into()), (4, "123".into())], replica.sender.resolutions());
     }
 
     #[derive(Default)]
-    struct VecSender([Vec<Command>; 4]);
+    struct VecSender([Vec<Command>; 4], StateMachine);
 
     impl VecSender {
         fn clear(&mut self) {
             for i in 0usize..4 {
                 self.0[i].clear();
             }
+        }
+
+        fn resolutions(&self) -> &[(Slot, Bytes)] {
+            &(&self.1).0
         }
     }
 
@@ -586,6 +639,7 @@ mod tests {
 
     impl Sender for VecSender {
         type Commander = Vec<Command>;
+        type StateMachine = StateMachine;
 
         fn send_to<F>(&mut self, node: NodeId, f: F)
         where
@@ -593,6 +647,19 @@ mod tests {
         {
             assert!(node < 4);
             f(&mut self.0[node as usize]);
+        }
+
+        fn state_machine(&mut self) -> &mut Self::StateMachine {
+            &mut self.1
+        }
+    }
+
+    #[derive(Default)]
+    struct StateMachine(Vec<(Slot, Bytes)>);
+
+    impl ReplicatedState for StateMachine {
+        fn execute(&mut self, slot: Slot, command: Bytes) {
+            self.0.push((slot, command));
         }
     }
 }
