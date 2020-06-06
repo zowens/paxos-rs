@@ -1,11 +1,12 @@
 use crate::{config::QuorumSet, Ballot, NodeId};
 use std::cmp::max;
 
-/// The proposer is a role within paxos that acts as a coordinator for the instance
-/// in that it attempts to elect itself the proposer (leader) for the instance via
-/// Phase 1. Once it has received a quorum, it will move to Phase 2 in which is will
-/// potentially send an ACCEPT message with a value from the acceptor with the highest
-/// accepted value already seen (key to the Paxos algorithm)
+/// The proposer is a role within paxos that acts as a coordinator for the
+/// instance in that it attempts to elect itself the proposer (leader) for the
+/// instance via Phase 1. Once it has received a quorum, it will move to Phase 2
+/// in which is will potentially send an ACCEPT message with a value from the
+/// acceptor with the highest accepted value already seen (key to the Paxos
+/// algorithm)
 pub struct Proposer {
     /// State of the proposer state machine
     state: ProposerState,
@@ -18,17 +19,14 @@ pub struct Proposer {
 }
 
 impl Proposer {
-    /// Creates new proposer state with the node identifier and the Phase 1 quorum size
+    /// Creates new proposer state with the node identifier and the Phase 1
+    /// quorum size
     pub fn new(node: NodeId, quorum: usize) -> Proposer {
-        Proposer {
-            state: ProposerState::Follower,
-            highest: None,
-            current: node,
-            quorum,
-        }
+        Proposer { state: ProposerState::Follower, highest: None, current: node, quorum }
     }
 
-    /// Returns the proposer's status as either `Follower`, `Candidate` or `Leader`
+    /// Returns the proposer's status as either `Follower`, `Candidate` or
+    /// `Leader`
     pub fn status(&self) -> ProposerStatus {
         match self.state {
             ProposerState::Candidate { .. } => ProposerStatus::Candidate,
@@ -72,18 +70,15 @@ impl Proposer {
         let mut promises = QuorumSet::with_size(self.quorum);
         promises.insert(self.current);
 
-        self.state = ProposerState::Candidate {
-            proposal: new_ballot,
-            promises,
-        };
+        self.state = ProposerState::Candidate { proposal: new_ballot, promises };
 
         debug!("Starting prepare with {:?}", new_ballot);
 
         new_ballot
     }
 
-    /// Handler for REJECT from an acceptor peer. Phase 1 with a higher ballot is returned
-    /// if the rejection has quorum.
+    /// Handler for REJECT from an acceptor peer. Phase 1 with a higher ballot
+    /// is returned if the rejection has quorum.
     pub fn receive_reject(&mut self, peer: NodeId, proposed: Ballot, promised: Ballot) {
         debug!(
             "Received REJECT for {:?} with preempted ballot {:?} from peer {}",
@@ -100,17 +95,15 @@ impl Proposer {
         self.observe_ballot(promised);
     }
 
-    /// Note a promise from a peer. An ACCEPT message is returned if quorum is detected.
+    /// Note a promise from a peer. An ACCEPT message is returned if quorum is
+    /// detected.
     pub fn receive_promise(&mut self, peer: NodeId, proposed: Ballot) {
         debug!("Received PROMISE for {:?} from peer {}", proposed, peer);
 
         match self.state {
             // if a promise is seen in the candiate state, we check for quorum to enter Phase 2
-            ProposerState::Candidate {
-                proposal,
-                ref mut promises,
-                ..
-            } if proposal == proposed && !promises.contains(peer) =>
+            ProposerState::Candidate { proposal, ref mut promises, .. }
+                if proposal == proposed && !promises.contains(peer) =>
             // only allow matching proposals (we could have restarted Phase 1) and only update when
             // we see a new promise from a new peer
             {
@@ -181,10 +174,7 @@ mod tests {
         });
 
         assert!(match proposer.state {
-            ProposerState::Candidate {
-                proposal: Ballot(101, 1),
-                ..
-            } => true,
+            ProposerState::Candidate { proposal: Ballot(101, 1), .. } => true,
             _ => false,
         });
 
@@ -201,11 +191,9 @@ mod tests {
         assert_eq!(Some(Ballot(101, 1)), proposer.highest_observed_ballot());
 
         assert!(match proposer.state {
-            ProposerState::Candidate {
-                proposal: Ballot(101, 1),
-                ref promises,
-                ..
-            } if promises.contains(1) => true,
+            ProposerState::Candidate { proposal: Ballot(101, 1), ref promises, .. }
+                if promises.contains(1) =>
+                true,
             _ => false,
         });
 
@@ -213,9 +201,7 @@ mod tests {
         assert!(proposer.status() == ProposerStatus::Leader);
         assert_eq!(Some(Ballot(101, 1)), proposer.highest_observed_ballot());
         assert!(match proposer.state {
-            ProposerState::Leader {
-                proposal: Ballot(101, 1),
-            } => true,
+            ProposerState::Leader { proposal: Ballot(101, 1) } => true,
             _ => false,
         });
     }
@@ -229,10 +215,7 @@ mod tests {
 
         proposer.prepare();
         assert!(match proposer.state {
-            ProposerState::Candidate {
-                proposal: Ballot(101, 1),
-                ..
-            } => true,
+            ProposerState::Candidate { proposal: Ballot(101, 1), .. } => true,
             _ => false,
         });
 
@@ -241,10 +224,7 @@ mod tests {
         assert!(proposer.status() != ProposerStatus::Leader);
         assert_eq!(Some(Ballot(101, 1)), proposer.highest_observed_ballot());
         assert!(match proposer.state {
-            ProposerState::Candidate {
-                proposal: Ballot(101, 1),
-                ..
-            } => true,
+            ProposerState::Candidate { proposal: Ballot(101, 1), .. } => true,
             _ => false,
         });
 
@@ -253,10 +233,7 @@ mod tests {
         assert!(proposer.status() != ProposerStatus::Leader);
         assert_eq!(Some(Ballot(101, 1)), proposer.highest_observed_ballot());
         assert!(match proposer.state {
-            ProposerState::Candidate {
-                proposal: Ballot(101, 1),
-                ..
-            } => true,
+            ProposerState::Candidate { proposal: Ballot(101, 1), .. } => true,
             _ => false,
         });
 

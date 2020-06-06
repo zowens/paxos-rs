@@ -1,4 +1,4 @@
-use crate::{Ballot, NodeId, Slot, SlottedValue, ReplicatedState};
+use crate::{Ballot, NodeId, ReplicatedState, Slot, SlottedValue};
 use bytes::Bytes;
 
 #[cfg(test)]
@@ -44,14 +44,16 @@ pub trait Commander {
     /// preempts either a Phase 1a (PREPARE) for Phase 2a (ACCEPT) message.
     fn reject(&mut self, node: NodeId, proposed: Ballot, preempted: Ballot);
 
-    /// Receives a Phase 2b ACCEPTED message containing the acceptor that has accepted
-    /// the slot's proposal along with the ballot that generated the slot.
+    /// Receives a Phase 2b ACCEPTED message containing the acceptor that has
+    /// accepted the slot's proposal along with the ballot that generated
+    /// the slot.
     fn accepted(&mut self, node: NodeId, slot: Slot, bal: Ballot);
 
-    /// Receives a final resolution of a slot that has been accepted by a majority
-    /// of acceptors.
+    /// Receives a final resolution of a slot that has been accepted by a
+    /// majority of acceptors.
     ///
-    /// NOTE: Resolutions may arrive out-of-order. No guarantees are made on slot order.
+    /// NOTE: Resolutions may arrive out-of-order. No guarantees are made on
+    /// slot order.
     fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes);
 }
 
