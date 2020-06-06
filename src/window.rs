@@ -1,8 +1,8 @@
 use super::Slot;
+use crate::{acceptor::Acceptor, Ballot};
 use bytes::Bytes;
-use crate::paxos::{self, Ballot};
-use std::ops::Range;
 use std::cmp::max;
+use std::ops::Range;
 
 struct ResolvedSlot(Ballot, Bytes);
 
@@ -12,7 +12,7 @@ pub struct SlotWindow {
     ///
     /// Some slots may be decided, but the open_min_slot is quaranteed
     /// to be still undecided.
-    open: Vec<paxos::Acceptor>,
+    open: Vec<Acceptor>,
     open_min_slot: Slot,
     max_promised: Option<Ballot>,
 
@@ -28,7 +28,7 @@ impl SlotWindow {
     pub fn new(quorum: usize) -> SlotWindow {
         let mut open = Vec::new();
         // add the first slot
-        open.push(paxos::Acceptor::new(None, quorum));
+        open.push(Acceptor::new(None, quorum));
 
         SlotWindow {
             open,
@@ -60,10 +60,7 @@ impl SlotWindow {
                 window: self,
             })
         } else {
-            SlotMutRef::Empty(EmptySlotRef {
-                slot,
-                window: self,
-            })
+            SlotMutRef::Empty(EmptySlotRef { slot, window: self })
         }
     }
 
@@ -76,13 +73,10 @@ impl SlotWindow {
             };
         }
 
-
         let i = self.open.len();
-        self.open.push(paxos::Acceptor::new(self.max_promised, self.quorum));
-        OpenSlotMutRef {
-            i,
-            window: self,
-        }
+        self.open
+            .push(Acceptor::new(self.max_promised, self.quorum));
+        OpenSlotMutRef { i, window: self }
     }
 
     /// Iterates on slot numbers of the open window.
@@ -98,7 +92,9 @@ impl SlotWindow {
 
     fn fill_decisions(&mut self) {
         // find the range of resolved slots
-        let last_resolved = self.open.iter()
+        let last_resolved = self
+            .open
+            .iter()
             .take_while(|slot| slot.resolution().is_some())
             .enumerate()
             .map(|(i, _)| i)
@@ -107,11 +103,10 @@ impl SlotWindow {
         // move resolved slots into the decided vector
         if let Some(i) = last_resolved {
             self.open_min_slot += (i as u64) + 1;
-            let resolutions = self.open.drain(0..=i)
-                .map(|open_slot| {
-                    let (bal, val) = open_slot.resolution().unwrap();
-                    ResolvedSlot(bal, val.clone())
-                });
+            let resolutions = self.open.drain(0..=i).map(|open_slot| {
+                let (bal, val) = open_slot.resolution().unwrap();
+                ResolvedSlot(bal, val.clone())
+            });
             self.decided.extend(resolutions);
             self.fill_open_slots(self.open_min_slot);
         }
@@ -124,8 +119,10 @@ impl SlotWindow {
 
         let quorum = self.quorum;
         let last_promised = self.max_promised;
-        self.open.extend((self.open_min_slot + self.open.len() as u64..=max_slot)
-            .map(|_| paxos::Acceptor::new(last_promised, quorum)));
+        self.open.extend(
+            (self.open_min_slot + self.open.len() as u64..=max_slot)
+                .map(|_| Acceptor::new(last_promised, quorum)),
+        );
     }
 }
 
@@ -140,7 +137,7 @@ impl<'a> OpenSlotMutRef<'a> {
         self.i as Slot + self.window.open_min_slot
     }
 
-    pub fn acceptor(&mut self) -> &mut paxos::Acceptor {
+    pub fn acceptor(&mut self) -> &mut Acceptor {
         &mut self.window.open[self.i]
     }
 }
@@ -244,7 +241,12 @@ mod tests {
         });
 
         {
-            window.slot_mut(2).unwrap_empty().fill().acceptor().resolve(Ballot(0, 0), "123".into());
+            window
+                .slot_mut(2)
+                .unwrap_empty()
+                .fill()
+                .acceptor()
+                .resolve(Ballot(0, 0), "123".into());
         }
 
         assert_eq!(0, window.open_min_slot);
@@ -252,16 +254,23 @@ mod tests {
         assert_eq!((0..3), window.open_range());
 
         {
-            window.slot_mut(0).unwrap_open().acceptor().resolve(Ballot(1,1), "456".into());
+            window
+                .slot_mut(0)
+                .unwrap_open()
+                .acceptor()
+                .resolve(Ballot(1, 1), "456".into());
         }
-
 
         assert_eq!(1, window.open_min_slot);
         assert_eq!(2, window.open.len());
         assert_eq!((1..3), window.open_range());
 
         {
-            window.slot_mut(1).unwrap_open().acceptor().resolve(Ballot(10,3), "789".into());
+            window
+                .slot_mut(1)
+                .unwrap_open()
+                .acceptor()
+                .resolve(Ballot(10, 3), "789".into());
         }
 
         assert_eq!(3, window.open_min_slot);

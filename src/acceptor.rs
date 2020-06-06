@@ -1,5 +1,4 @@
-use super::{Ballot, QuorumSet};
-use crate::config::NodeId;
+use crate::{config::QuorumSet, Ballot, NodeId};
 use bytes::Bytes;
 use std::cmp::max;
 
@@ -14,10 +13,7 @@ impl Acceptor {
     pub fn new(promised: Option<Ballot>, quorum: usize) -> Acceptor {
         assert!(quorum > 1);
         Acceptor {
-            state: AcceptorState::AwaitValue {
-                promised,
-                quorum,
-            },
+            state: AcceptorState::AwaitValue { promised, quorum },
         }
     }
 
@@ -28,7 +24,6 @@ impl Acceptor {
             AcceptorState::AwaitQuorum { promised, .. } => Some(promised),
             AcceptorState::Resolved { accepted, .. } => Some(accepted),
         }
-
     }
 
     /// Value of the highest accepted value
@@ -36,13 +31,20 @@ impl Acceptor {
         match self.state {
             AcceptorState::AwaitValue { .. } => None,
             AcceptorState::AwaitQuorum { ref proposed, .. } => Some(proposed.clone()),
-            AcceptorState::Resolved { accepted, ref value } => Some((accepted, value.clone())),
+            AcceptorState::Resolved {
+                accepted,
+                ref value,
+            } => Some((accepted, value.clone())),
         }
     }
 
     /// Shows the resolution, if available
     pub fn resolution(&self) -> Option<(Ballot, Bytes)> {
-        if let AcceptorState::Resolved { accepted, ref value } = self.state {
+        if let AcceptorState::Resolved {
+            accepted,
+            ref value,
+        } = self.state
+        {
             Some((accepted, value.clone()))
         } else {
             None
@@ -62,14 +64,17 @@ impl Acceptor {
     pub fn resolve(&mut self, bal: Ballot, val: Bytes) {
         // ignore if the acceptor is already resolved
         match self.state {
-            AcceptorState::Resolved { accepted, ref value } => {
+            AcceptorState::Resolved {
+                accepted,
+                ref value,
+            } => {
                 if accepted != bal || val != value {
                     warn!("Attempt to resolve to a different ballot or value. Accepted=<{:?},{:?}>, Attempted=<{:?},{:?}>",
                         accepted, value, bal, val);
                 }
                 return;
             }
-            _ => {},
+            _ => {}
         }
 
         self.state = AcceptorState::Resolved {
@@ -77,7 +82,6 @@ impl Acceptor {
             value: val,
         };
     }
-
 
     /// Handler for a PREPARE message sent from a proposer. The result is either a PROMISE
     /// to the proposer to not accept ballots > proposal or a REJECT if a ballot has been
@@ -88,25 +92,39 @@ impl Acceptor {
         }
 
         match self.state {
-            AcceptorState::AwaitValue { ref mut promised, .. } => {
-                match *promised {
-                    Some(promised_ballot) if promised_ballot > ballot => {
-                        PrepareResponse::Reject { proposed: ballot, preempted: promised_ballot}
-                    }
-                    _ => {
-                        *promised = Some(ballot);
-                        PrepareResponse::Promise { proposed: ballot, value: None }
+            AcceptorState::AwaitValue {
+                ref mut promised, ..
+            } => match *promised {
+                Some(promised_ballot) if promised_ballot > ballot => PrepareResponse::Reject {
+                    proposed: ballot,
+                    preempted: promised_ballot,
+                },
+                _ => {
+                    *promised = Some(ballot);
+                    PrepareResponse::Promise {
+                        proposed: ballot,
+                        value: None,
                     }
                 }
             },
-            AcceptorState::AwaitQuorum { ref mut promised, ref proposed, .. } => {
+            AcceptorState::AwaitQuorum {
+                ref mut promised,
+                ref proposed,
+                ..
+            } => {
                 if *promised > ballot {
-                    PrepareResponse::Reject { proposed: ballot, preempted: *promised }
+                    PrepareResponse::Reject {
+                        proposed: ballot,
+                        preempted: *promised,
+                    }
                 } else {
                     *promised = ballot;
-                    PrepareResponse::Promise { proposed: ballot, value: Some(proposed.clone())}
+                    PrepareResponse::Promise {
+                        proposed: ballot,
+                        value: Some(proposed.clone()),
+                    }
                 }
-            },
+            }
             AcceptorState::Resolved { .. } => PrepareResponse::Resolved,
         }
     }
@@ -121,7 +139,9 @@ impl Acceptor {
         // to ensure that future PREPARE messages from Proposers will not be lower
         // than the accepted value from this ACCEPT message.
         match self.state {
-            AcceptorState::AwaitValue { ref mut promised, .. } => {
+            AcceptorState::AwaitValue {
+                ref mut promised, ..
+            } => {
                 if *promised > Some(ballot) {
                     return AcceptResponse::Reject {
                         preempted: promised.unwrap(),
@@ -129,8 +149,10 @@ impl Acceptor {
                     };
                 }
                 *promised = Some(ballot);
-            },
-            AcceptorState::AwaitQuorum { ref mut promised, .. } => {
+            }
+            AcceptorState::AwaitQuorum {
+                ref mut promised, ..
+            } => {
                 if *promised > ballot {
                     return AcceptResponse::Reject {
                         preempted: *promised,
@@ -138,7 +160,7 @@ impl Acceptor {
                     };
                 }
                 *promised = ballot;
-            },
+            }
             AcceptorState::Resolved { .. } => return AcceptResponse::Resolved,
         };
 
@@ -164,19 +186,27 @@ impl Acceptor {
                 // to consider this node as accepting all Phase 2 proposals as both
                 // the Distinguished Proposer and an Acceptor
                 assert!(quorum > 1);
-                (Some(AcceptorState::AwaitQuorum {
-                    promised: max(Some(ballot), promised).unwrap(),
-                    proposed: (ballot, value),
-                    quorum: QuorumSet::with_size(quorum - 1),
-                }), None)
-            },
-            AcceptorState::AwaitQuorum { promised, proposed: (bal, ref val), ref quorum } if bal < ballot => {
-                (Some(AcceptorState::AwaitQuorum {
+                (
+                    Some(AcceptorState::AwaitQuorum {
+                        promised: max(Some(ballot), promised).unwrap(),
+                        proposed: (ballot, value),
+                        quorum: QuorumSet::with_size(quorum - 1),
+                    }),
+                    None,
+                )
+            }
+            AcceptorState::AwaitQuorum {
+                promised,
+                proposed: (bal, ref val),
+                ref quorum,
+            } if bal < ballot => (
+                Some(AcceptorState::AwaitQuorum {
                     promised: max(promised, ballot),
                     proposed: (ballot, value),
                     quorum: QuorumSet::with_size(quorum.len()),
-                }), Some((bal, val.clone())))
-            },
+                }),
+                Some((bal, val.clone())),
+            ),
             _ => (None, None),
         };
 
@@ -190,21 +220,22 @@ impl Acceptor {
     /// Received ACCEPTED messages based on a proposal from this acceptor
     pub fn receive_accepted(&mut self, peer: NodeId, ballot: Ballot) {
         let resolution = match self.state {
-            AcceptorState::AwaitQuorum { ref proposed, ref mut quorum, .. } if ballot == proposed.0  => {
+            AcceptorState::AwaitQuorum {
+                ref proposed,
+                ref mut quorum,
+                ..
+            } if ballot == proposed.0 => {
                 quorum.insert(peer);
                 if quorum.has_quorum() {
                     Some(proposed.clone())
                 } else {
                     None
                 }
-            },
+            }
             _ => None,
         };
         if let Some((accepted, value)) = resolution {
-            self.state = AcceptorState::Resolved {
-                accepted,
-                value,
-            };
+            self.state = AcceptorState::Resolved { accepted, value };
         }
     }
 }
@@ -220,10 +251,7 @@ pub enum PrepareResponse {
     },
     /// Phase 1 is rejected due to a previously accepted ballot
     /// that is higher than the proposed ballot
-    Reject {
-        proposed: Ballot,
-        preempted: Ballot,
-    },
+    Reject { proposed: Ballot, preempted: Ballot },
     /// Acceptor has previously resolved the value during Phase 3
     Resolved,
 }
@@ -240,10 +268,7 @@ pub enum AcceptResponse {
     },
     /// Phase 2 is rejected due to a previously accepted ballot
     /// that is higher than the accept message ballot
-    Reject {
-        proposed: Ballot,
-        preempted: Ballot,
-    },
+    Reject { proposed: Ballot, preempted: Ballot },
     /// Acceptor has previously resolved the value during Phase 3
     Resolved,
 }
@@ -280,7 +305,6 @@ enum AcceptorState {
     },
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,17 +315,35 @@ mod tests {
 
         // acceptor promises the ballot when nothing promised
         let res = acceptor.receive_prepare(Ballot(100, 1));
-        assert_eq!(res, PrepareResponse::Promise { proposed: Ballot(100, 1), value: None });
+        assert_eq!(
+            res,
+            PrepareResponse::Promise {
+                proposed: Ballot(100, 1),
+                value: None
+            }
+        );
         assert_eq!(acceptor.promised(), Some(Ballot(100, 1)));
 
         // acceptor promises higher ballots
         let res = acceptor.receive_prepare(Ballot(102, 2));
-        assert_eq!(res, PrepareResponse::Promise { proposed: Ballot(102, 2), value: None });
+        assert_eq!(
+            res,
+            PrepareResponse::Promise {
+                proposed: Ballot(102, 2),
+                value: None
+            }
+        );
         assert_eq!(acceptor.promised(), Some(Ballot(102, 2)));
 
         // acceptor will reject ballots < promised
         let res = acceptor.receive_prepare(Ballot(101, 1));
-        assert_eq!(res, PrepareResponse::Reject { proposed: Ballot(101, 1), preempted: Ballot(102, 2) });
+        assert_eq!(
+            res,
+            PrepareResponse::Reject {
+                proposed: Ballot(101, 1),
+                preempted: Ballot(102, 2)
+            }
+        );
         assert_eq!(acceptor.promised(), Some(Ballot(102, 2)));
 
         // prepare contains last accepted values
@@ -312,7 +354,13 @@ mod tests {
         };
 
         let res = acceptor.receive_prepare(Ballot(103, 1));
-        assert_eq!(res, PrepareResponse::Promise { proposed: Ballot(103, 1), value: Some((Ballot(102, 2), "123".into())) });
+        assert_eq!(
+            res,
+            PrepareResponse::Promise {
+                proposed: Ballot(103, 1),
+                value: Some((Ballot(102, 2), "123".into()))
+            }
+        );
         assert_eq!(acceptor.promised(), Some(Ballot(103, 1)));
     }
 
@@ -322,10 +370,13 @@ mod tests {
 
         // acceptor allows ACCEPT without a promise
         let res = acceptor.receive_accept(Ballot(101, 1), "ab".into());
-        assert_eq!(res, AcceptResponse::Accepted {
-            proposed: Ballot(101, 1),
-            preempted_proposal: None,
-        });
+        assert_eq!(
+            res,
+            AcceptResponse::Accepted {
+                proposed: Ballot(101, 1),
+                preempted_proposal: None,
+            }
+        );
         assert_eq!(acceptor.promised(), Some(Ballot(101, 1)));
 
         // acceptor sends REJECT with ballot less than already accepted
@@ -345,7 +396,8 @@ mod tests {
             AcceptResponse::Accepted {
                 proposed: Ballot(103, 4),
                 preempted_proposal: Some((Ballot(101, 1), "ab".into())),
-            });
+            }
+        );
 
         // already resolved during ACCEPT
         acceptor.resolve(Ballot(105, 5), "cde".into());
@@ -358,12 +410,14 @@ mod tests {
 
         // Reject during awaiting value
         let res = acceptor.receive_accept(Ballot(0, 0), "aaa".into());
-        assert_eq!(res, AcceptResponse::Reject {
-            proposed: Ballot(0, 0),
-            preempted: Ballot(100, 4),
-        });
+        assert_eq!(
+            res,
+            AcceptResponse::Reject {
+                proposed: Ballot(0, 0),
+                preempted: Ballot(100, 4),
+            }
+        );
     }
-
 
     #[test]
     fn receive_accepted() {
@@ -375,7 +429,8 @@ mod tests {
             AcceptResponse::Accepted {
                 proposed: Ballot(90, 0),
                 preempted_proposal: None,
-            });
+            }
+        );
 
         // ignores previous ballots from the same acceptor
         acceptor.receive_accepted(1, Ballot(90, 0));
@@ -390,10 +445,7 @@ mod tests {
         // allows quorum to be reached
         acceptor.receive_accepted(2, Ballot(90, 0));
         assert!(acceptor.resolved());
-        assert_eq!(
-            acceptor.resolution(),
-            Some((Ballot(90, 0), "abc".into()))
-        );
+        assert_eq!(acceptor.resolution(), Some((Ballot(90, 0), "abc".into())));
 
         // ignores subsequent requests after quorum
         acceptor.receive_accepted(3, Ballot(90, 0));

@@ -1,11 +1,6 @@
-use super::Slot;
-use crate::config::NodeId;
-use crate::paxos::Ballot;
+use crate::{Ballot, NodeId, Slot, SlottedValue};
 use bytes::Bytes;
 use std::iter::Extend;
-
-/// Tuple containing the the slot number, ballot and value
-pub type SlottedValue = (Slot, Ballot, Bytes);
 
 /// Sends commands to other replicas
 pub trait Sender {
