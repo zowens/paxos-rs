@@ -286,4 +286,20 @@ mod tests {
             assert_eq!("123", val);
         }
     }
+
+    #[test]
+    pub fn test_open_one() {
+        let mut window = SlotWindow::new(2);
+        {
+            window.slot_mut(1).unwrap_empty().fill();
+        }
+        assert_eq!((0..2), window.open_range());
+
+        {
+            assert!(match window.slot_mut(0) {
+                SlotMutRef::Open(ref mut slot) => !slot.acceptor().highest_value().is_some(),
+                _ => false,
+            });
+        }
+    }
 }

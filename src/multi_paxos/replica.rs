@@ -53,10 +53,15 @@ impl<S: Sender> Replica<S> {
         let bal = self.proposer.highest_observed_ballot().unwrap();
         assert!(bal.1 == self.config.current());
 
-        // TODO: do we sent out resolutions too?
+
+        // add queued proposals to new slots
+        for value in self.proposal_queue.drain(..) {
+            let mut slot = self.window.next_slot();
+            slot.acceptor().notice_value(bal, value.clone());
+        }
 
         // queue up all accepts
-        let mut accepts = self.window.open_range()
+        let accepts = self.window.open_range()
             .filter_map(|slot| {
                 match self.window.slot_mut(slot) {
                     SlotMutRef::Open(ref mut open_slot) => {
@@ -65,22 +70,21 @@ impl<S: Sender> Replica<S> {
                             open_slot.acceptor().notice_value(bal, val.clone());
                             Some((slot, bal, val))
                         } else {
-                            None
+                            open_slot.acceptor().notice_value(bal, Bytes::default());
+                            Some((slot, bal, Bytes::default()))
                         }
+                    },
+                    SlotMutRef::Empty(empty_slot) => {
+                        // fill the hole with an empty slot
+                        let mut slot = empty_slot.fill();
+                        slot.acceptor().notice_value(bal, Bytes::default());
+                        Some((slot.slot(), bal, Bytes::default()))
                     },
                     _ => None,
                 }
             })
             .collect::<Vec<SlottedValue>>();
 
-
-        // add queued proposals to new slots
-        accepts.reserve(self.proposal_queue.len());
-        for value in self.proposal_queue.drain(..) {
-            let mut slot = self.window.next_slot();
-            slot.acceptor().notice_value(bal, value.clone());
-            accepts.push((slot.slot(), bal, value));
-        }
 
         // send out the accepts
         for (slot, bal, val) in accepts {
@@ -406,6 +410,31 @@ mod tests {
             )
         });
     }
+
+    #[test]
+    fn replica_promise_with_slot_holes() {
+        let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
+        replica.proposal("123".into());
+        assert_eq!(Some(Ballot(0, 4)), replica.proposer.highest_observed_ballot());
+        replica.sender.clear();
+
+        // replica needs 2 more promises to achieve Phase 1 Quorum
+        replica.promise(1, Ballot(0, 4), vec![(2, Ballot(0, 0), "456".into())]);
+        (0..4).for_each(|i| assert!(replica.sender[i].is_empty()));
+
+        replica.promise(2, Ballot(0, 4), vec![]);
+
+        (0..4).for_each(|i| {
+            assert_eq!(
+                &[Command::Accept(0, Ballot(0, 4), Bytes::default()),
+                  Command::Accept(1, Ballot(0, 4), Bytes::default()),
+                  Command::Accept(2, Ballot(0, 4), "456".into()),
+                  Command::Accept(3, Ballot(0, 4), "123".into())],
+                &replica.sender[i]
+            );
+        });
+    }
+
 
     #[test]
     fn replica_accept() {
