@@ -1,8 +1,7 @@
 use super::Slot;
 use crate::{acceptor::Acceptor, Ballot};
 use bytes::Bytes;
-use std::cmp::max;
-use std::ops::Range;
+use std::{cmp::max, ops::Range};
 
 struct ResolvedSlot(Ballot, Bytes);
 
@@ -30,13 +29,7 @@ impl SlotWindow {
         // add the first slot
         open.push(Acceptor::new(None, quorum));
 
-        SlotWindow {
-            open,
-            open_min_slot: 0,
-            max_promised: None,
-            decided: Vec::new(),
-            quorum,
-        }
+        SlotWindow { open, open_min_slot: 0, max_promised: None, decided: Vec::new(), quorum }
     }
 
     /// Mutable reference to a slot
@@ -65,10 +58,7 @@ impl SlotWindow {
                 }
             }
 
-            SlotMutRef::Open(OpenSlotMutRef {
-                i: open_index,
-                window: self,
-            })
+            SlotMutRef::Open(OpenSlotMutRef { i: open_index, window: self })
         } else {
             // slot has not yet been opened
             SlotMutRef::Empty(EmptySlotRef { slot, window: self })
@@ -85,8 +75,7 @@ impl SlotWindow {
         }
 
         let i = self.open.len();
-        self.open
-            .push(Acceptor::new(self.max_promised, self.quorum));
+        self.open.push(Acceptor::new(self.max_promised, self.quorum));
         OpenSlotMutRef { i, window: self }
     }
 
@@ -95,17 +84,17 @@ impl SlotWindow {
     /// Some slots may have been resolved, but the start of the range
     /// contains the min slot that is open.
     pub fn open_range(&self) -> Range<Slot> {
-        Range {
-            start: self.open_min_slot,
-            end: self.open_min_slot + self.open.len() as Slot,
-        }
+        Range { start: self.open_min_slot, end: self.open_min_slot + self.open.len() as Slot }
     }
 
     /// Removes decisions for application in the state machine
-    pub fn drain_decisions<'a>(&'a mut self) -> impl Iterator<Item=(Slot, Bytes)> + 'a {
+    pub fn drain_decisions<'a>(&'a mut self) -> impl Iterator<Item = (Slot, Bytes)> + 'a {
         assert!(self.open_min_slot as usize >= self.decided.len());
         let min_slot = self.open_min_slot - self.decided.len() as Slot;
-        self.decided.drain(..).enumerate().map(move |(i, ResolvedSlot(_, val))| (i as Slot + min_slot, val))
+        self.decided
+            .drain(..)
+            .enumerate()
+            .map(move |(i, ResolvedSlot(_, val))| (i as Slot + min_slot, val))
     }
 
     fn fill_decisions(&mut self) {
@@ -192,10 +181,7 @@ impl<'a> EmptySlotRef<'a> {
     pub fn fill(self) -> OpenSlotMutRef<'a> {
         self.window.fill_open_slots(self.slot);
         let i = self.slot - self.window.open_min_slot;
-        OpenSlotMutRef {
-            i: i as usize,
-            window: self.window,
-        }
+        OpenSlotMutRef { i: i as usize, window: self.window }
     }
 }
 
@@ -262,12 +248,7 @@ mod tests {
         });
 
         {
-            window
-                .slot_mut(2)
-                .unwrap_empty()
-                .fill()
-                .acceptor()
-                .resolve(Ballot(0, 0), "123".into());
+            window.slot_mut(2).unwrap_empty().fill().acceptor().resolve(Ballot(0, 0), "123".into());
         }
 
         assert_eq!(0, window.open_min_slot);
@@ -275,11 +256,7 @@ mod tests {
         assert_eq!((0..3), window.open_range());
 
         {
-            window
-                .slot_mut(0)
-                .unwrap_open()
-                .acceptor()
-                .resolve(Ballot(1, 1), "456".into());
+            window.slot_mut(0).unwrap_open().acceptor().resolve(Ballot(1, 1), "456".into());
         }
 
         assert_eq!(1, window.open_min_slot);
@@ -287,11 +264,7 @@ mod tests {
         assert_eq!((1..3), window.open_range());
 
         {
-            window
-                .slot_mut(1)
-                .unwrap_open()
-                .acceptor()
-                .resolve(Ballot(10, 3), "789".into());
+            window.slot_mut(1).unwrap_open().acceptor().resolve(Ballot(10, 3), "789".into());
         }
 
         assert_eq!(3, window.open_min_slot);

@@ -1,10 +1,10 @@
 use crate::NodeId;
-use std::collections::hash_map;
-use std::collections::HashMap;
-use std::fmt;
-use std::net::SocketAddr;
-use std::cmp::Ordering;
-
+use std::{
+    cmp::Ordering,
+    collections::{hash_map, HashMap},
+    fmt,
+    net::SocketAddr,
+};
 
 /// Configuration holds the state of the membership of the cluster.
 #[derive(Clone)]
@@ -23,11 +23,7 @@ impl Configuration {
         let peers: HashMap<NodeId, SocketAddr> = peers.collect();
         let socket_to_peer: HashMap<SocketAddr, NodeId> =
             peers.iter().map(|e| (*e.1, *e.0)).collect();
-        Configuration {
-            current,
-            peers,
-            socket_to_peer,
-        }
+        Configuration { current, peers, socket_to_peer }
     }
 
     /// Size of phase 1 and phase 2 quorums.
@@ -54,11 +50,7 @@ impl Configuration {
 
     /// Gets the address of a node.
     pub fn address(&self, node: NodeId) -> Option<SocketAddr> {
-        if node == self.current.0 {
-            Some(self.current.1)
-        } else {
-            self.peers.get(&node).cloned()
-        }
+        if node == self.current.0 { Some(self.current.1) } else { self.peers.get(&node).cloned() }
     }
 
     /// Gets the peer ID from a socket address.
@@ -94,9 +86,7 @@ impl<'a, 'b: 'a> IntoIterator for &'b PeerIntoIter<'a> {
     type Item = NodeId;
 
     fn into_iter(self) -> PeerIter<'a> {
-        PeerIter {
-            iter: self.r.peers.keys(),
-        }
+        PeerIter { iter: self.r.peers.keys() }
     }
 }
 
@@ -137,9 +127,7 @@ impl QuorumSet {
     /// Creates a QuorumSet with a given size for quorum.
     pub fn with_size(size: usize) -> QuorumSet {
         assert!(size > 0);
-        QuorumSet {
-            values: vec![None; size].into_boxed_slice(),
-        }
+        QuorumSet { values: vec![None; size].into_boxed_slice() }
     }
 
     /// Size of the quorum
