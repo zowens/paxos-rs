@@ -1,4 +1,4 @@
-use crate::multi_paxos::Slot;
+use crate::Slot;
 use bytes::Bytes;
 
 /// `ReplicatedState` is a state machine that applies value synchronously. The

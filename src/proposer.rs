@@ -1,5 +1,4 @@
-use super::{Ballot, QuorumSet};
-use crate::config::NodeId;
+use crate::{config::QuorumSet, Ballot, NodeId};
 use std::cmp::max;
 
 /// The proposer is a role within paxos that acts as a coordinator for the instance
@@ -45,8 +44,9 @@ impl Proposer {
         let ballot_leader = self.highest.unwrap().1 == self.current;
 
         let lost_leadership = match self.state {
-            ProposerState::Candidate { .. } |
-                ProposerState::Leader { .. } if !ballot_leader => true,
+            ProposerState::Candidate { .. } | ProposerState::Leader { .. } if !ballot_leader => {
+                true
+            }
             _ => false,
         };
         if lost_leadership {
@@ -90,8 +90,10 @@ impl Proposer {
             proposed, promised, peer
         );
         if proposed >= promised {
-            warn!("Incorrect order received from peer {}, proposed {:?} >= promised {:?}",
-                peer, proposed, promised);
+            warn!(
+                "Incorrect order received from peer {}, proposed {:?} >= promised {:?}",
+                peer, proposed, promised
+            );
             return;
         }
 
@@ -99,7 +101,7 @@ impl Proposer {
     }
 
     /// Note a promise from a peer. An ACCEPT message is returned if quorum is detected.
-    pub fn receive_promise(&mut self, peer: NodeId, proposed: Ballot)  {
+    pub fn receive_promise(&mut self, peer: NodeId, proposed: Ballot) {
         debug!("Received PROMISE for {:?} from peer {}", proposed, peer);
 
         match self.state {
@@ -128,9 +130,7 @@ impl Proposer {
 
         // proposer has quorum from acceptors, upgrade to Leader and start
         // Phase 2 if we already have a value
-        self.state = ProposerState::Leader {
-            proposal: proposed,
-        };
+        self.state = ProposerState::Leader { proposal: proposed };
     }
 }
 
@@ -219,7 +219,6 @@ mod tests {
             _ => false,
         });
     }
-
 
     #[test]
     fn proposer_receive_reject() {

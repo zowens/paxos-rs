@@ -1,8 +1,8 @@
-use super::commands::*;
-use super::Slot;
-use super::window::{SlotWindow, SlotMutRef};
-use crate::config::{Configuration, NodeId};
-use crate::paxos::{self, Ballot};
+use crate::acceptor::{AcceptResponse, PrepareResponse};
+use crate::commands::*;
+use crate::proposer::{Proposer, ProposerStatus};
+use crate::window::{SlotMutRef, SlotWindow};
+use crate::{config::Configuration, Ballot, NodeId, Slot, SlottedValue};
 use bytes::Bytes;
 use std::mem;
 
@@ -10,7 +10,7 @@ use std::mem;
 pub struct Replica<S> {
     sender: S,
     config: Configuration,
-    proposer: paxos::Proposer,
+    proposer: Proposer,
     window: SlotWindow,
 
     // TODO: bound the proposal queue
@@ -27,7 +27,7 @@ impl<S: Sender> Replica<S> {
         Replica {
             sender,
             config,
-            proposer: paxos::Proposer::new(node, p1_quorum),
+            proposer: Proposer::new(node, p1_quorum),
             proposal_queue: Vec::new(),
             window: SlotWindow::new(p2_quorum),
         }
@@ -46,13 +46,12 @@ impl<S: Sender> Replica<S> {
 
     /// Broadcast ACCEPT messages once the proposer has phase 1 quorum
     fn drive_accept(&mut self) {
-        if self.proposer.status() != paxos::ProposerStatus::Leader {
+        if self.proposer.status() != ProposerStatus::Leader {
             return;
         }
 
         let bal = self.proposer.highest_observed_ballot().unwrap();
         assert!(bal.1 == self.config.current());
-
 
         // add queued proposals to new slots
         for value in self.proposal_queue.drain(..) {
@@ -61,7 +60,9 @@ impl<S: Sender> Replica<S> {
         }
 
         // queue up all accepts
-        let accepts = self.window.open_range()
+        let accepts = self
+            .window
+            .open_range()
             .filter_map(|slot| {
                 match self.window.slot_mut(slot) {
                     SlotMutRef::Open(ref mut open_slot) => {
@@ -73,18 +74,17 @@ impl<S: Sender> Replica<S> {
                             open_slot.acceptor().notice_value(bal, Bytes::default());
                             Some((slot, bal, Bytes::default()))
                         }
-                    },
+                    }
                     SlotMutRef::Empty(empty_slot) => {
                         // fill the hole with an empty slot
                         let mut slot = empty_slot.fill();
                         slot.acceptor().notice_value(bal, Bytes::default());
                         Some((slot.slot(), bal, Bytes::default()))
-                    },
+                    }
                     _ => None,
                 }
             })
             .collect::<Vec<SlottedValue>>();
-
 
         // send out the accepts
         for (slot, bal, val) in accepts {
@@ -94,7 +94,7 @@ impl<S: Sender> Replica<S> {
 
     /// Forwards pending proposals to the new leader
     fn forward(&mut self) {
-        if self.proposer.status() != paxos::ProposerStatus::Follower || self.proposal_queue.is_empty() {
+        if self.proposer.status() != ProposerStatus::Follower || self.proposal_queue.is_empty() {
             return;
         }
 
@@ -122,8 +122,6 @@ impl<S: Sender> Replica<S> {
 
 impl<S: Sender> Commander for Replica<S> {
     fn proposal(&mut self, val: Bytes) {
-        use crate::paxos::ProposerStatus;
-
         // redirect to the distinguished proposer or start PREPARE
         match self.proposer.status() {
             ProposerStatus::Follower if self.proposer.highest_observed_ballot().is_none() => {
@@ -131,17 +129,18 @@ impl<S: Sender> Commander for Replica<S> {
                 self.proposal_queue.push(val);
                 let bal = self.proposer.prepare();
                 self.broadcast(|c| c.prepare(bal));
-            },
+            }
             ProposerStatus::Follower => {
-                self.sender.send_to(
-                    self.proposer.highest_observed_ballot().unwrap().1,
-                    |c| c.proposal(val));
-            },
+                self.sender
+                    .send_to(self.proposer.highest_observed_ballot().unwrap().1, |c| {
+                        c.proposal(val)
+                    });
+            }
             ProposerStatus::Candidate => {
                 // still waiting for promises, queue up the value
                 // TODO: should this re-send some PREPARE messages?
                 self.proposal_queue.push(val);
-            },
+            }
             ProposerStatus::Leader => {
                 // node is the distinguished proposer
                 let bal = self.proposer.highest_observed_ballot().unwrap();
@@ -151,12 +150,11 @@ impl<S: Sender> Commander for Replica<S> {
                     slot_ref.slot()
                 };
                 self.broadcast(|c| c.accept(slot, bal, val.clone()));
-            },
+            }
         }
     }
 
     fn prepare(&mut self, bal: Ballot) {
-        use crate::paxos::PrepareResponse;
         self.proposer.observe_ballot(bal);
 
         let node_id = self.config.current();
@@ -166,33 +164,43 @@ impl<S: Sender> Commander for Replica<S> {
             match self.window.slot_mut(slot) {
                 SlotMutRef::Open(ref mut open_ref) => {
                     match open_ref.acceptor().receive_prepare(bal) {
-                        PrepareResponse::Promise { value: Some((bal, val)), .. } => {
+                        PrepareResponse::Promise {
+                            value: Some((bal, val)),
+                            ..
+                        } => {
                             accepted.push((slot, bal, val));
-                        },
-                        PrepareResponse::Reject { proposed, preempted } => {
+                        }
+                        PrepareResponse::Reject {
+                            proposed,
+                            preempted,
+                        } => {
                             // found a slot that accepted a higher ballot, send the reject
                             self.sender
                                 .send_to(bal.1, |c| c.reject(node_id, proposed, preempted));
                             return;
-                        },
-                        _ => {},
+                        }
+                        _ => {}
                     }
-                },
+                }
                 SlotMutRef::Resolved(bal, val) => {
                     // TODO: is this the right thing to do here?????
                     accepted.push((slot, bal, val));
-                },
+                }
                 SlotMutRef::Empty(_) => {
-                    warn!("Empty slot {} detected in the middle of the open range", slot);
+                    warn!(
+                        "Empty slot {} detected in the middle of the open range",
+                        slot
+                    );
                     continue;
-                },
+                }
             }
         }
-        self.sender.send_to(bal.1, move |c| c.promise(node_id, bal, accepted));
+        self.sender
+            .send_to(bal.1, move |c| c.promise(node_id, bal, accepted));
     }
 
     fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<SlottedValue>) {
-        if self.proposer.status() != paxos::ProposerStatus::Candidate {
+        if self.proposer.status() != ProposerStatus::Candidate {
             return;
         }
 
@@ -203,11 +211,11 @@ impl<S: Sender> Commander for Replica<S> {
             match self.window.slot_mut(slot) {
                 SlotMutRef::Open(ref mut open_slot) => {
                     open_slot.acceptor().notice_value(bal, val);
-                },
+                }
                 SlotMutRef::Empty(empty_slot) => {
                     empty_slot.fill().acceptor().notice_value(bal, val);
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
 
@@ -216,7 +224,6 @@ impl<S: Sender> Commander for Replica<S> {
     }
 
     fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
-        use crate::paxos::AcceptResponse;
         self.proposer.observe_ballot(bal);
 
         let current_node = self.config.current();
@@ -224,25 +231,25 @@ impl<S: Sender> Commander for Replica<S> {
             SlotMutRef::Empty(empty_slot) => {
                 let mut open_slot = empty_slot.fill();
                 open_slot.acceptor().receive_accept(bal, val)
-            },
-            SlotMutRef::Open(ref mut open_slot) => {
-                open_slot.acceptor().receive_accept(bal, val)
-            },
+            }
+            SlotMutRef::Open(ref mut open_slot) => open_slot.acceptor().receive_accept(bal, val),
             _ => return,
         };
-
 
         match acceptor_res {
             AcceptResponse::Accepted { .. } => {
                 // TODO: what do we do w/ the preempted proposal
                 self.sender
                     .send_to(bal.1, |c| c.accepted(current_node, slot, bal));
-            },
-            AcceptResponse::Reject {proposed,preempted} => {
+            }
+            AcceptResponse::Reject {
+                proposed,
+                preempted,
+            } => {
                 self.sender
                     .send_to(bal.1, |c| c.reject(current_node, proposed, preempted));
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
@@ -256,14 +263,14 @@ impl<S: Sender> Commander for Replica<S> {
         self.proposer.observe_ballot(bal);
 
         let resolution = match self.window.slot_mut(slot) {
-            SlotMutRef::Open(ref mut open_ref) =>  {
+            SlotMutRef::Open(ref mut open_ref) => {
                 open_ref.acceptor().receive_accepted(node, bal);
                 open_ref.acceptor().resolution()
             }
             SlotMutRef::Empty(_) => {
                 warn!("Received accepted() for slot {} which is unknown", slot);
                 return;
-            },
+            }
             _ => return,
         };
 
@@ -310,7 +317,10 @@ mod tests {
 
         // sent with no existing proposal, kickstarts phase 1
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0, 4)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(0, 4)),
+            replica.proposer.highest_observed_ballot()
+        );
         assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[0]);
         assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[1]);
         assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[2]);
@@ -320,7 +330,10 @@ mod tests {
         // for now, drop proposals while we have an instance in-flight
         // TODO: this should advance to another instance
         replica.proposal("456".into());
-        assert_eq!(Some(Ballot(0, 4)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(0, 4)),
+            replica.proposer.highest_observed_ballot()
+        );
         assert!(replica.sender[0].is_empty());
         assert!(replica.sender[1].is_empty());
         assert!(replica.sender[2].is_empty());
@@ -333,7 +346,10 @@ mod tests {
     fn replica_proposal_redirection() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.prepare(Ballot(0, 3));
-        assert_eq!(Some(Ballot(0, 3)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(0, 3)),
+            replica.proposer.highest_observed_ballot()
+        );
         replica.sender.clear();
 
         replica.proposal("123".into());
@@ -348,7 +364,10 @@ mod tests {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
 
         replica.prepare(Ballot(1, 0));
-        assert_eq!(Some(Ballot(1, 0)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(1, 0)),
+            replica.proposer.highest_observed_ballot()
+        );
         assert_eq!(
             &[Command::Promise(4, Ballot(1, 0), Vec::new())],
             &replica.sender[0]
@@ -359,7 +378,10 @@ mod tests {
         replica.sender.clear();
 
         replica.prepare(Ballot(0, 2));
-        assert_eq!(Some(Ballot(1, 0)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(1, 0)),
+            replica.proposer.highest_observed_ballot()
+        );
         assert!(&replica.sender[0].is_empty());
         assert!(&replica.sender[1].is_empty());
         assert_eq!(
@@ -373,7 +395,10 @@ mod tests {
     fn replica_promise_without_existing_accepted_value() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0, 4)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(0, 4)),
+            replica.proposer.highest_observed_ballot()
+        );
         replica.sender.clear();
 
         // replica needs 2 more promises to achieve Phase 1 Quorum
@@ -394,7 +419,10 @@ mod tests {
     fn replica_promise_with_existing_accepted_value() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0, 4)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(0, 4)),
+            replica.proposer.highest_observed_ballot()
+        );
         replica.sender.clear();
 
         // replica needs 2 more promises to achieve Phase 1 Quorum
@@ -405,7 +433,10 @@ mod tests {
 
         (0..4).for_each(|i| {
             assert_eq!(
-                &[Command::Accept(0, Ballot(0, 4), "456".into()), Command::Accept(1, Ballot(0, 4), "123".into())],
+                &[
+                    Command::Accept(0, Ballot(0, 4), "456".into()),
+                    Command::Accept(1, Ballot(0, 4), "123".into())
+                ],
                 &replica.sender[i]
             )
         });
@@ -415,7 +446,10 @@ mod tests {
     fn replica_promise_with_slot_holes() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0, 4)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(0, 4)),
+            replica.proposer.highest_observed_ballot()
+        );
         replica.sender.clear();
 
         // replica needs 2 more promises to achieve Phase 1 Quorum
@@ -426,21 +460,25 @@ mod tests {
 
         (0..4).for_each(|i| {
             assert_eq!(
-                &[Command::Accept(0, Ballot(0, 4), Bytes::default()),
-                  Command::Accept(1, Ballot(0, 4), Bytes::default()),
-                  Command::Accept(2, Ballot(0, 4), "456".into()),
-                  Command::Accept(3, Ballot(0, 4), "123".into())],
+                &[
+                    Command::Accept(0, Ballot(0, 4), Bytes::default()),
+                    Command::Accept(1, Ballot(0, 4), Bytes::default()),
+                    Command::Accept(2, Ballot(0, 4), "456".into()),
+                    Command::Accept(3, Ballot(0, 4), "123".into())
+                ],
                 &replica.sender[i]
             );
         });
     }
 
-
     #[test]
     fn replica_accept() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.prepare(Ballot(8, 2));
-        assert_eq!(Some(Ballot(8, 2)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(8, 2)),
+            replica.proposer.highest_observed_ballot()
+        );
         replica.sender.clear();
 
         // test rejection first for bal < proposer.highest_observed_ballot
@@ -453,13 +491,19 @@ mod tests {
 
         // test replying with accepted message when bal = proposer.highest_observed_ballot
         replica.accept(0, Ballot(8, 2), "456".into());
-        assert_eq!(Some(Ballot(8, 2)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(8, 2)),
+            replica.proposer.highest_observed_ballot()
+        );
         assert_eq!(&[Command::Accepted(4, 0, Ballot(8, 2))], &replica.sender[2]);
         replica.sender.clear();
 
         // test replying with accepted message when bal > proposer.highest_observed_ballot
         replica.accept(0, Ballot(9, 2), "789".into());
-        assert_eq!(Some(Ballot(9, 2)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(9, 2)),
+            replica.proposer.highest_observed_ballot()
+        );
         assert_eq!(&[Command::Accepted(4, 0, Ballot(9, 2))], &replica.sender[2]);
     }
 
@@ -467,12 +511,18 @@ mod tests {
     fn replica_reject() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0, 4)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(0, 4)),
+            replica.proposer.highest_observed_ballot()
+        );
         replica.sender.clear();
 
         replica.reject(2, Ballot(0, 4), Ballot(5, 3));
-        assert_eq!(Some(Ballot(5, 3)), replica.proposer.highest_observed_ballot());
-        assert_eq!(paxos::ProposerStatus::Follower, replica.proposer.status());
+        assert_eq!(
+            Some(Ballot(5, 3)),
+            replica.proposer.highest_observed_ballot()
+        );
+        assert_eq!(ProposerStatus::Follower, replica.proposer.status());
         assert_eq!(&[Command::Proposal("123".into())], &replica.sender[3]);
         (0..3).for_each(|i| assert!(replica.sender[i].is_empty()));
     }
@@ -481,7 +531,10 @@ mod tests {
     fn replica_accepted() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
         replica.proposal("123".into());
-        assert_eq!(Some(Ballot(0, 4)), replica.proposer.highest_observed_ballot());
+        assert_eq!(
+            Some(Ballot(0, 4)),
+            replica.proposer.highest_observed_ballot()
+        );
         replica.promise(1, Ballot(0, 4), vec![]);
         replica.promise(0, Ballot(0, 4), vec![]);
         replica.promise(2, Ballot(0, 4), vec![]);
