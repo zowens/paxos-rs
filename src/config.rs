@@ -9,14 +9,14 @@ use std::{
 /// Configuration holds the state of the membership of the cluster.
 #[derive(Clone)]
 pub struct Configuration {
-    current: (NodeId, SocketAddr),
+    current: NodeId,
     peers: HashMap<NodeId, SocketAddr>,
     socket_to_peer: HashMap<SocketAddr, NodeId>,
 }
 
 impl Configuration {
     /// Creates a new configuration
-    pub fn new<I>(current: (NodeId, SocketAddr), peers: I) -> Configuration
+    pub fn new<I>(current: NodeId, peers: I) -> Configuration
     where
         I: Iterator<Item = (NodeId, SocketAddr)>,
     {
@@ -35,12 +35,7 @@ impl Configuration {
 
     /// Current node identifier
     pub fn current(&self) -> NodeId {
-        self.current.0
-    }
-
-    /// Current node address
-    pub fn current_address(&self) -> &SocketAddr {
-        &self.current.1
+        self.current
     }
 
     /// Iterator containing `NodeId` values of peers
@@ -48,18 +43,9 @@ impl Configuration {
         PeerIntoIter { r: &self }
     }
 
-    /// Gets the address of a node.
-    pub fn address(&self, node: NodeId) -> Option<SocketAddr> {
-        if node == self.current.0 { Some(self.current.1) } else { self.peers.get(&node).cloned() }
-    }
-
-    /// Gets the peer ID from a socket address.
-    pub fn peer_id(&self, address: &SocketAddr) -> Option<NodeId> {
-        if address == &self.current.1 {
-            Some(self.current.0)
-        } else {
-            self.socket_to_peer.get(address).cloned()
-        }
+    /// Gets all addresses contained in the configuration
+    pub fn addresses<'a>(&'a self) -> impl Iterator<Item = (NodeId, SocketAddr)> + 'a {
+        self.peers.iter().map(|(node, addr)| (*node, *addr))
     }
 }
 
@@ -67,8 +53,7 @@ impl fmt::Debug for Configuration {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let quorum_size = self.quorum_size();
         fmt.debug_struct("Configuration")
-            .field("current_node_id", &self.current.0)
-            .field("current_node_address", &self.current.1)
+            .field("current_node_id", &self.current)
             .field("peers", &self.peers)
             .field("peers_to_socket", &self.socket_to_peer)
             .field("quorum", &quorum_size)

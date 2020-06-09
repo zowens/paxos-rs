@@ -311,7 +311,7 @@ mod tests {
 
     lazy_static! {
         static ref CONFIG: Configuration = Configuration::new(
-            (4u32, "127.0.0.1:4004".parse().unwrap()),
+            4u32,
             vec![
                 (0, "127.0.0.1:4000".parse().unwrap()),
                 (1, "127.0.0.1:4001".parse().unwrap()),

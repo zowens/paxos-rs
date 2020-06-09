@@ -17,6 +17,7 @@ pub struct SlotWindow {
 
     /// Slots that have been decided.
     decided: Vec<ResolvedSlot>,
+    execute_start: usize,
 
     /// Size of the phase 2 quorum
     quorum: usize,
@@ -29,7 +30,14 @@ impl SlotWindow {
         // add the first slot
         open.push(Acceptor::new(None, quorum));
 
-        SlotWindow { open, open_min_slot: 0, max_promised: None, decided: Vec::new(), quorum }
+        SlotWindow {
+            open,
+            open_min_slot: 0,
+            max_promised: None,
+            decided: Vec::new(),
+            quorum,
+            execute_start: 0,
+        }
     }
 
     /// Mutable reference to a slot
@@ -68,10 +76,7 @@ impl SlotWindow {
     /// Opens the next slot
     pub fn next_slot(&mut self) -> OpenSlotMutRef {
         if self.open.last().is_some() && !self.open.last().unwrap().highest_value().is_some() {
-            return OpenSlotMutRef {
-                i: self.open_min_slot as usize + self.open.len() - 1,
-                window: self,
-            };
+            return OpenSlotMutRef { i: self.open.len() - 1, window: self };
         }
 
         let i = self.open.len();
@@ -89,12 +94,7 @@ impl SlotWindow {
 
     /// Removes decisions for application in the state machine
     pub fn drain_decisions<'a>(&'a mut self) -> impl Iterator<Item = (Slot, Bytes)> + 'a {
-        assert!(self.open_min_slot as usize >= self.decided.len());
-        let min_slot = self.open_min_slot - self.decided.len() as Slot;
-        self.decided
-            .drain(..)
-            .enumerate()
-            .map(move |(i, ResolvedSlot(_, val))| (i as Slot + min_slot, val))
+        DecisionIter(self)
     }
 
     fn fill_decisions(&mut self) {
@@ -109,6 +109,8 @@ impl SlotWindow {
 
         // move resolved slots into the decided vector
         if let Some(i) = last_resolved {
+            trace!("Filled up to slot {}", i);
+
             self.open_min_slot += (i as u64) + 1;
             let resolutions = self.open.drain(0..=i).map(|open_slot| {
                 let (bal, val) = open_slot.resolution().unwrap();
@@ -182,6 +184,24 @@ impl<'a> EmptySlotRef<'a> {
         self.window.fill_open_slots(self.slot);
         let i = self.slot - self.window.open_min_slot;
         OpenSlotMutRef { i: i as usize, window: self.window }
+    }
+}
+
+/// Iterator over the window's decisions
+struct DecisionIter<'a>(&'a mut SlotWindow);
+
+impl<'a> Iterator for DecisionIter<'a> {
+    type Item = (Slot, Bytes);
+
+    fn next(&mut self) -> Option<(Slot, Bytes)> {
+        if self.0.execute_start >= self.0.decided.len() {
+            return None;
+        }
+
+        let slot = self.0.execute_start;
+        let val = self.0.decided[self.0.execute_start].1.clone();
+        self.0.execute_start = slot + 1;
+        Some((slot as Slot, val))
     }
 }
 
@@ -333,13 +353,41 @@ mod tests {
 
         for i in 0..3 {
             assert!(match window.slot_mut(i) {
-                SlotMutRef::ResolutionTruncated => true,
+                SlotMutRef::Resolved(..) => true,
                 _ => false,
             })
         }
 
         {
             assert_eq!(0, window.drain_decisions().count());
+        }
+    }
+
+    #[test]
+    fn next_slot() {
+        let mut window = SlotWindow::new(2);
+
+        // first slot is considered next since it is not filled with a value
+        {
+            let mut next_slot = window.next_slot();
+            assert_eq!(0, next_slot.slot());
+            next_slot.acceptor().resolve(Ballot(0, 10), "foo".into());
+        }
+
+        {
+            let mut next_slot = window.next_slot();
+            assert_eq!(1, next_slot.slot());
+            next_slot.acceptor().notice_value(Ballot(0, 10), "bar".into());
+        }
+
+        {
+            let next_slot = window.next_slot();
+            assert_eq!(2, next_slot.slot());
+        }
+
+        {
+            let next_slot = window.next_slot();
+            assert_eq!(2, next_slot.slot());
         }
     }
 }
