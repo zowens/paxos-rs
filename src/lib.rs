@@ -14,7 +14,7 @@
 //!
 //! # fn main() {
 //! let config = Configuration::new(
-//!     (0u32, "127.0.0.1:4000".parse().unwrap()),
+//!     0u32,
 //!     vec![(1, "127.0.0.1:4001".parse().unwrap()),
 //!          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
 //!
