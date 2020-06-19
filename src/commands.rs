@@ -1,4 +1,4 @@
-use crate::{Ballot, NodeId, ReplicatedState, Slot, SlottedValue};
+use crate::{Ballot, NodeId, ReplicatedState, Slot};
 use bytes::Bytes;
 
 #[cfg(test)]
@@ -33,12 +33,12 @@ pub trait Commander {
     /// Receive a Phase 1b PROMISE message containing the node
     /// that generated the promise, the ballot promised and all accepted
     /// values within the open window.
-    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<SlottedValue>);
+    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<(Slot, Ballot, Bytes)>);
 
     /// Receive a Phase 2a ACCEPT message that contains the the slot, proposed
     /// ballot and value of the proposal. The ballot contains the node of
     /// the leader of the slot.
-    fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes);
+    fn accept(&mut self, bal: Ballot, slot_values: Vec<(Slot, Bytes)>);
 
     /// Receives a REJECT message from a peer containing a higher ballot that
     /// preempts either a Phase 1a (PREPARE) for Phase 2a (ACCEPT) message.
@@ -47,15 +47,19 @@ pub trait Commander {
     /// Receives a Phase 2b ACCEPTED message containing the acceptor that has
     /// accepted the slot's proposal along with the ballot that generated
     /// the slot.
-    fn accepted(&mut self, node: NodeId, slot: Slot, bal: Ballot);
+    fn accepted(&mut self, node: NodeId, bal: Ballot, slots: Vec<Slot>);
 
     /// Receives a final resolution of a slot that has been accepted by a
     /// majority of acceptors.
     ///
     /// NOTE: Resolutions may arrive out-of-order. No guarantees are made on
     /// slot order.
-    fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes);
+    fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>);
+
 }
+
+// TODO: is it possible to avoid sending Bytes back to replicas that know of the value?
+
 
 #[derive(PartialEq, Eq, Debug)]
 #[cfg(test)]
@@ -63,10 +67,10 @@ pub enum Command {
     Proposal(Bytes),
     Prepare(Ballot),
     Promise(NodeId, Ballot, Vec<(Slot, Ballot, Bytes)>),
-    Accept(Slot, Ballot, Bytes),
+    Accept(Ballot, Vec<(Slot, Bytes)>),
     Reject(NodeId, Ballot, Ballot),
-    Accepted(NodeId, Slot, Ballot),
-    Resolution(Slot, Ballot, Bytes),
+    Accepted(NodeId, Ballot, Vec<Slot>),
+    Resolution(Ballot, Vec<(Slot, Bytes)>),
 }
 
 #[cfg(test)]
@@ -82,23 +86,23 @@ where
         self.extend(Some(Command::Prepare(bal)));
     }
 
-    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<SlottedValue>) {
+    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<(Slot, Ballot, Bytes)>) {
         self.extend(Some(Command::Promise(node, bal, accepted)));
     }
 
-    fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
-        self.extend(Some(Command::Accept(slot, bal, val)));
+    fn accept(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>) {
+        self.extend(Some(Command::Accept(bal, values)));
     }
 
     fn reject(&mut self, node: NodeId, proposed: Ballot, promised: Ballot) {
         self.extend(Some(Command::Reject(node, proposed, promised)));
     }
 
-    fn accepted(&mut self, node: NodeId, slot: Slot, bal: Ballot) {
-        self.extend(Some(Command::Accepted(node, slot, bal)));
+    fn accepted(&mut self, node: NodeId, bal: Ballot, slots: Vec<Slot>) {
+        self.extend(Some(Command::Accepted(node, bal, slots)));
     }
 
-    fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
-        self.extend(Some(Command::Resolution(slot, bal, val)));
+    fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>) {
+        self.extend(Some(Command::Resolution(bal, values)));
     }
 }

@@ -2,7 +2,7 @@ use crate::kvstore::KeyValueStore;
 use bincode::{deserialize, serialize};
 use bytes::Bytes;
 use hyper::{client::HttpConnector, Body, Client, Request};
-use paxos::{Ballot, Commander, Configuration, NodeId, Sender, Slot, SlottedValue};
+use paxos::{Ballot, Commander, Configuration, NodeId, Sender, Slot};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,10 +11,10 @@ enum Command {
     Proposal(Bytes),
     Prepare(#[serde(with = "BallotDef")] Ballot),
     Promise(NodeId, #[serde(with = "BallotDef")] Ballot, Vec<SlotValueTuple>),
-    Accept(Slot, #[serde(with = "BallotDef")] Ballot, Bytes),
+    Accept(#[serde(with = "BallotDef")] Ballot, Vec<(Slot, Bytes)>),
     Reject(NodeId, #[serde(with = "BallotDef")] Ballot, #[serde(with = "BallotDef")] Ballot),
-    Accepted(NodeId, Slot, #[serde(with = "BallotDef")] Ballot),
-    Resolution(Slot, #[serde(with = "BallotDef")] Ballot, Bytes),
+    Accepted(NodeId, #[serde(with = "BallotDef")] Ballot, Vec<Slot>),
+    Resolution(#[serde(with = "BallotDef")] Ballot, Vec<(Slot, Bytes)>),
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -56,10 +56,10 @@ pub fn invoke(replica: &mut paxos::Replica<PaxosSender>, command: Bytes) {
             bal,
             accepted.into_iter().map(|SlotValueTuple(slot, bal, val)| (slot, bal, val)).collect(),
         ),
-        Command::Accept(slot, bal, val) => replica.accept(slot, bal, val),
+        Command::Accept(bal, vals) => replica.accept(bal, vals),
         Command::Reject(node, proposed, preempted) => replica.reject(node, proposed, preempted),
-        Command::Accepted(node, slot, bal) => replica.accepted(node, slot, bal),
-        Command::Resolution(slot, bal, val) => replica.resolution(slot, bal, val),
+        Command::Accepted(node, bal, slots) => replica.accepted(node, bal, slots),
+        Command::Resolution(bal, vals) => replica.resolution(bal, vals),
     };
 }
 
@@ -108,7 +108,7 @@ impl Commander for PaxosCommander {
         self.send(Command::Prepare(bal));
     }
 
-    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<SlottedValue>) {
+    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<(Slot, Ballot, Bytes)>) {
         self.send(Command::Promise(
             node,
             bal,
@@ -116,19 +116,19 @@ impl Commander for PaxosCommander {
         ));
     }
 
-    fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
-        self.send(Command::Accept(slot, bal, val));
+    fn accept(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>) {
+        self.send(Command::Accept(bal, values));
     }
 
     fn reject(&mut self, node: NodeId, proposed: Ballot, preempted: Ballot) {
         self.send(Command::Reject(node, proposed, preempted));
     }
 
-    fn accepted(&mut self, node: NodeId, slot: Slot, bal: Ballot) {
-        self.send(Command::Accepted(node, slot, bal));
+    fn accepted(&mut self, node: NodeId, bal: Ballot, slots: Vec<Slot>) {
+        self.send(Command::Accepted(node, bal, slots));
     }
 
-    fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
-        self.send(Command::Resolution(slot, bal, val));
+    fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>) {
+        self.send(Command::Resolution(bal, values));
     }
 }

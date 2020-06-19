@@ -57,9 +57,6 @@ pub type NodeId = u32;
 #[derive(PartialEq, Hash, Eq, Clone, Copy, Debug)]
 pub struct Ballot(pub u32, pub NodeId);
 
-/// Tuple containing the the slot number, ballot and value
-pub type SlottedValue = (Slot, Ballot, bytes::Bytes);
-
 impl Ballot {
     /// Generates a ballot that is greater than `self` for a given node.
     pub fn higher_for(&self, n: NodeId) -> Ballot {

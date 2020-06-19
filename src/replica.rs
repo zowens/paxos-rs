@@ -3,7 +3,7 @@ use crate::{
     commands::*,
     proposer::{Proposer, ProposerStatus},
     window::{SlotMutRef, SlotWindow},
-    Ballot, Configuration, NodeId, ReplicatedState, Slot, SlottedValue,
+    Ballot, Configuration, NodeId, ReplicatedState, Slot,
 };
 use bytes::Bytes;
 use std::mem;
@@ -79,26 +79,26 @@ impl<S: Sender> Replica<S> {
                         if let Some((_, val)) = open_slot.acceptor().highest_value() {
                             // have the acceptor update the highest ballot to this one
                             open_slot.acceptor().notice_value(bal, val.clone());
-                            Some((slot, bal, val))
+                            Some((slot, val))
                         } else {
                             open_slot.acceptor().notice_value(bal, Bytes::default());
-                            Some((slot, bal, Bytes::default()))
+                            Some((slot, Bytes::default()))
                         }
                     }
                     SlotMutRef::Empty(empty_slot) => {
                         // fill the hole with an empty slot
                         let mut slot = empty_slot.fill();
                         slot.acceptor().notice_value(bal, Bytes::default());
-                        Some((slot.slot(), bal, Bytes::default()))
+                        Some((slot.slot(), Bytes::default()))
                     }
                     _ => None,
                 }
             })
-            .collect::<Vec<SlottedValue>>();
+            .collect::<Vec<_>>();
 
         // send out the accepts
-        for (slot, bal, val) in accepts {
-            self.broadcast(|c| c.accept(slot, bal, val.clone()));
+        if !accepts.is_empty() {
+            self.broadcast(|c| c.accept(bal, accepts.clone()));
         }
     }
 
@@ -167,7 +167,7 @@ impl<S: Sender> Commander for Replica<S> {
                     slot_ref.acceptor().notice_value(bal, val.clone());
                     slot_ref.slot()
                 };
-                self.broadcast(|c| c.accept(slot, bal, val.clone()));
+                self.broadcast(|c| c.accept(bal, vec![(slot, val.clone())]))
             }
         }
     }
@@ -209,7 +209,7 @@ impl<S: Sender> Commander for Replica<S> {
         self.sender.send_to(bal.1, move |c| c.promise(node_id, bal, accepted));
     }
 
-    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<SlottedValue>) {
+    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<(Slot, Ballot, Bytes)>) {
         if self.proposer.status() != ProposerStatus::Candidate {
             return;
         }
@@ -233,68 +233,77 @@ impl<S: Sender> Commander for Replica<S> {
         self.drive_accept();
     }
 
-    fn accept(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
+    fn accept(&mut self, bal: Ballot, slot_values: Vec<(Slot, Bytes)>) {
         self.proposer.observe_ballot(bal);
 
         let current_node = self.config.current();
-        let acceptor_res = match self.window.slot_mut(slot) {
-            SlotMutRef::Empty(empty_slot) => {
-                let mut open_slot = empty_slot.fill();
-                open_slot.acceptor().receive_accept(bal, val)
-            }
-            SlotMutRef::Open(ref mut open_slot) => open_slot.acceptor().receive_accept(bal, val),
-            _ => return,
-        };
+        let mut accepted_slots = Vec::with_capacity(slot_values.len());
+        for (slot, val) in slot_values.into_iter() {
+            let acceptor_res = match self.window.slot_mut(slot) {
+                SlotMutRef::Empty(empty_slot) => {
+                    let mut open_slot = empty_slot.fill();
+                    open_slot.acceptor().receive_accept(bal, val)
+                }
+                SlotMutRef::Open(ref mut open_slot) => open_slot.acceptor().receive_accept(bal, val),
+                _ => return,
+            };
 
-        match acceptor_res {
-            AcceptResponse::Accepted { .. } => {
-                // TODO: what do we do w/ the preempted proposal
-                self.sender.send_to(bal.1, |c| c.accepted(current_node, slot, bal));
+            match acceptor_res {
+                AcceptResponse::Accepted { .. } => {
+                    // TODO: what do we do w/ the preempted proposal
+                    accepted_slots.push(slot);
+                }
+                AcceptResponse::Reject { proposed, preempted } => {
+                    self.sender.send_to(bal.1, |c| c.reject(current_node, proposed, preempted));
+                    return;
+                }
+                _ => {}
             }
-            AcceptResponse::Reject { proposed, preempted } => {
-                self.sender.send_to(bal.1, |c| c.reject(current_node, proposed, preempted));
-            }
-            _ => {}
         }
+
+        self.sender.send_to(bal.1, |c| c.accepted(current_node, bal, accepted_slots));
     }
 
     fn reject(&mut self, node: NodeId, proposed: Ballot, promised: Ballot) {
-        // reject it within the proposer
+        // reject preempted ballot within the proposer
         self.proposer.receive_reject(node, proposed, promised);
         self.forward();
     }
 
-    fn accepted(&mut self, node: NodeId, slot: Slot, bal: Ballot) {
+    fn accepted(&mut self, node: NodeId, bal: Ballot, slots: Vec<Slot>) {
         self.proposer.observe_ballot(bal);
 
-        let resolution = match self.window.slot_mut(slot) {
-            SlotMutRef::Open(ref mut open_ref) => {
-                open_ref.acceptor().receive_accepted(node, bal);
-                open_ref.acceptor().resolution()
+        // notify each slot of the accepted, collecting resolutions
+        let mut resolutions = Vec::with_capacity(slots.len());
+        for slot in slots {
+            match self.window.slot_mut(slot) {
+                SlotMutRef::Open(ref mut open_ref) => {
+                    open_ref.acceptor().receive_accepted(node, bal);
+                    open_ref.acceptor().resolution().into_iter().for_each(|res| resolutions.push((slot, res.1)));
+                }
+                SlotMutRef::Empty(_) => {
+                    warn!("Received accepted() for slot {} which is unknown", slot);
+                }
+                _ => return,
             }
-            SlotMutRef::Empty(_) => {
-                warn!("Received accepted() for slot {} which is unknown", slot);
-                return;
-            }
-            _ => return,
-        };
-
-        if let Some((bal, val)) = resolution {
-            self.broadcast(|c| c.resolution(slot, bal, val.clone()));
         }
 
-        // execute resolved decisions
-        self.execute_decisions();
+        if !resolutions.is_empty() {
+            resolutions.shrink_to_fit();
+            self.broadcast(|c| c.resolution(bal, resolutions.clone()));
+            self.execute_decisions();
+        }
     }
 
-    fn resolution(&mut self, slot: Slot, bal: Ballot, val: Bytes) {
+    fn resolution(&mut self, bal: Ballot, slot_vals: Vec<(Slot, Bytes)>) {
         self.proposer.observe_ballot(bal);
 
-        // resolve the slot
-        match self.window.slot_mut(slot) {
-            SlotMutRef::Empty(empty_slot) => empty_slot.fill().acceptor().resolve(bal, val),
-            SlotMutRef::Open(ref mut open) => open.acceptor().resolve(bal, val),
-            _ => {}
+        for (slot, val) in slot_vals.into_iter() {
+            match self.window.slot_mut(slot) {
+                SlotMutRef::Empty(empty_slot) => empty_slot.fill().acceptor().resolve(bal, val),
+                SlotMutRef::Open(ref mut open) => open.acceptor().resolve(bal, val),
+                _ => {}
+            }
         }
 
         // execute resolved decisions
@@ -397,7 +406,7 @@ mod tests {
         replica.promise(2, Ballot(0, 4), Vec::new());
 
         (0..4).for_each(|i| {
-            assert_eq!(&[Command::Accept(0, Ballot(0, 4), "123".into())], &replica.sender[i])
+            assert_eq!(&[Command::Accept(Ballot(0, 4), vec![(0, "123".into())])], &replica.sender[i])
         });
 
         assert!(replica.sender.resolutions().is_empty());
@@ -419,8 +428,7 @@ mod tests {
         (0..4).for_each(|i| {
             assert_eq!(
                 &[
-                    Command::Accept(0, Ballot(0, 4), "456".into()),
-                    Command::Accept(1, Ballot(0, 4), "123".into())
+                    Command::Accept(Ballot(0, 4), vec![(0, "456".into()), (1, "123".into())])
                 ],
                 &replica.sender[i]
             )
@@ -445,10 +453,11 @@ mod tests {
         (0..4).for_each(|i| {
             assert_eq!(
                 &[
-                    Command::Accept(0, Ballot(0, 4), Bytes::default()),
-                    Command::Accept(1, Ballot(0, 4), Bytes::default()),
-                    Command::Accept(2, Ballot(0, 4), "456".into()),
-                    Command::Accept(3, Ballot(0, 4), "123".into())
+                    Command::Accept(Ballot(0, 4), vec![
+                        (0, Bytes::default()),
+                        (1, Bytes::default()),
+                        (2, "456".into()),
+                        (3, "123".into())])
                 ],
                 &replica.sender[i]
             );
@@ -465,25 +474,34 @@ mod tests {
         replica.sender.clear();
 
         // test rejection first for bal < proposer.highest_observed_ballot
-        replica.accept(0, Ballot(1, 1), "123".into());
+        replica.accept(Ballot(1, 1), vec![(0, "123".into())]);
         assert_eq!(&[Command::Reject(4, Ballot(1, 1), Ballot(8, 2))], &replica.sender[1]);
         replica.sender.clear();
 
         // test replying with accepted message when bal =
         // proposer.highest_observed_ballot
-        replica.accept(0, Ballot(8, 2), "456".into());
+        replica.accept(Ballot(8, 2), vec![(0, "456".into())]);
         assert_eq!(Some(Ballot(8, 2)), replica.proposer.highest_observed_ballot());
-        assert_eq!(&[Command::Accepted(4, 0, Ballot(8, 2))], &replica.sender[2]);
+        assert_eq!(&[Command::Accepted(4, Ballot(8, 2), vec![0])], &replica.sender[2]);
         replica.sender.clear();
 
         // test replying with accepted message when bal >
         // proposer.highest_observed_ballot
-        replica.accept(0, Ballot(9, 2), "789".into());
+        replica.accept(Ballot(9, 2), vec![(0, "789".into())]);
         assert_eq!(Some(Ballot(9, 2)), replica.proposer.highest_observed_ballot());
-        assert_eq!(&[Command::Accepted(4, 0, Ballot(9, 2))], &replica.sender[2]);
+        assert_eq!(&[Command::Accepted(4, Ballot(9, 2), vec![0])], &replica.sender[2]);
 
         assert!(replica.sender.resolutions().is_empty());
+        replica.sender.clear();
+
+
+        // try with multiple accepts
+        replica.accept(Ballot(10, 2), vec![(1, "foo".into()), (2, "bar".into())]);
+        assert_eq!(Some(Ballot(10, 2)), replica.proposer.highest_observed_ballot());
+        assert_eq!(&[Command::Accepted(4, Ballot(10, 2), vec![1, 2])], &replica.sender[2]);
+
     }
+
 
     #[test]
     fn replica_reject() {
@@ -501,6 +519,7 @@ mod tests {
         assert!(replica.sender.resolutions().is_empty());
     }
 
+
     #[test]
     fn replica_accepted() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
@@ -512,36 +531,62 @@ mod tests {
         replica.sender.clear();
 
         // wait for phase 2 quorum (accepted) before sending resolution
-        replica.accepted(0, 0, Ballot(0, 4));
+        replica.accepted(0, Ballot(0, 4), vec![0]);
         (0..4).for_each(|i| assert!(replica.sender[i].is_empty()));
 
-        replica.accepted(2, 0, Ballot(0, 4));
+        replica.accepted(2, Ballot(0, 4), vec![0]);
         (0..4).for_each(|i| {
-            assert_eq!(&[Command::Resolution(0, Ballot(0, 4), "123".into())], &replica.sender[i])
+            assert_eq!(&[Command::Resolution(Ballot(0, 4), vec![(0, "123".into())])], &replica.sender[i])
         });
 
         assert_eq!(&[(0, "123".into())], replica.sender.resolutions());
+
+        // allow multiple accepted slots
+        replica.proposal("foo".into());
+        replica.proposal("bar".into());
+        replica.sender.clear();
+        replica.accepted(0, Ballot(0, 4), vec![1, 2]);
+        (0..4).for_each(|i| assert!(replica.sender[i].is_empty()));
+        replica.accepted(1, Ballot(0, 4), vec![1, 2]);
+
+        (0..4).for_each(|i| {
+            assert_eq!(&[Command::Resolution(Ballot(0, 4), vec![(1, "foo".into()), (2, "bar".into())])], &replica.sender[i])
+        });
+
+        assert_eq!(&[(0, "123".into()), (1, "foo".into()), (2, "bar".into())], replica.sender.resolutions());
+
+        // allow multiple accepts, but only when the slots receive quorum!
+        replica.proposal("foo2".into());
+        replica.proposal("bar2".into());
+        replica.sender.clear();
+        replica.accepted(0, Ballot(0, 4), vec![3, 4]);
+        (0..4).for_each(|i| assert!(replica.sender[i].is_empty()));
+        replica.accepted(1, Ballot(0, 4), vec![3]);
+
+        (0..4).for_each(|i| {
+            assert_eq!(&[Command::Resolution(Ballot(0, 4), vec![(3, "foo2".into())])], &replica.sender[i])
+        });
+
+        assert_eq!(&[(0, "123".into()), (1, "foo".into()), (2, "bar".into()), (3, "foo2".into())], replica.sender.resolutions());
     }
+
 
     #[test]
     fn replica_resolution() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
 
-        replica.resolution(4, Ballot(1, 2), "123".into());
+        replica.resolution(Ballot(1, 2), vec![(4, "123".into())]);
         assert_eq!((0..5), replica.window.open_range());
         assert!(match replica.window.slot_mut(4) {
             SlotMutRef::Resolved(Ballot(1, 2), val) if val == "123" => true,
             _ => false,
         });
 
-        replica.resolution(1, Ballot(1, 2), Bytes::default());
-        replica.resolution(0, Ballot(1, 2), "000".into());
+        replica.resolution(Ballot(1, 2), vec![(1, Bytes::default()), (0, "000".into())]);
         assert_eq!(&[(0, "000".into())], replica.sender.resolutions());
 
         // fill hole 1,2
-        replica.resolution(1, Ballot(1, 2), Bytes::default());
-        replica.resolution(2, Ballot(1, 2), Bytes::default());
-        replica.resolution(3, Ballot(1, 2), "3".into());
+        replica.resolution(Ballot(1, 2), vec![(2, Bytes::default()), (3, "3".into())]);
 
         assert_eq!(
             &[(0, "000".into()), (3, "3".into()), (4, "123".into())],
