@@ -25,14 +25,10 @@ impl Proposer {
         Proposer { state: ProposerState::Follower, highest: None, current: node, quorum }
     }
 
-    /// Returns the proposer's status as either `Follower`, `Candidate` or
+    /// Returns the proposer's state as either `Follower`, `Candidate` or
     /// `Leader`
-    pub fn status(&self) -> ProposerStatus {
-        match self.state {
-            ProposerState::Candidate { .. } => ProposerStatus::Candidate,
-            ProposerState::Follower => ProposerStatus::Follower,
-            ProposerState::Leader { .. } => ProposerStatus::Leader,
-        }
+    pub fn state(&self) -> &ProposerState {
+        &self.state
     }
 
     /// Overrides the highest seen value, if ballot is the highest seen
@@ -129,7 +125,7 @@ impl Proposer {
 
 /// Encoding of the Proposer role's state machine
 #[derive(Debug)]
-enum ProposerState {
+pub enum ProposerState {
     /// Empty state: this proposer is not a candidate (in Phase 1) or
     /// a leader (Phase 2)
     Follower,
@@ -148,14 +144,34 @@ enum ProposerState {
     },
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum ProposerStatus {
-    /// Proposer is following another node OR there is no known leader
-    Follower,
-    /// Proposer is waiting for Phase 1b (PROMISE) messages
-    Candidate,
-    /// Proposer is assumed to be the leader
-    Leader,
+impl ProposerState {
+    /// Proposer is the distinguished proposer
+    pub fn is_leader(&self) -> bool {
+        if let ProposerState::Leader { .. } = *self {
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Proposer is a candidate for leader
+    pub fn is_candidate(&self) -> bool {
+        if let ProposerState::Candidate { .. } = *self {
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Prooser is a follower of another replica or uninitiated
+    pub fn is_follower(&self) -> bool {
+        if let ProposerState::Follower { .. } = *self {
+            true
+        } else {
+            false
+        }
+    }
+
 }
 
 #[cfg(test)]
@@ -165,7 +181,7 @@ mod tests {
     #[test]
     fn proposer_prepare() {
         let mut proposer = Proposer::new(1, 2);
-        assert!(proposer.status() != ProposerStatus::Leader);
+        assert!(!proposer.state().is_leader());
         proposer.observe_ballot(Ballot(100, 1));
 
         assert!(match proposer.prepare() {
@@ -178,7 +194,7 @@ mod tests {
             _ => false,
         });
 
-        assert!(proposer.status() != ProposerStatus::Leader);
+        assert!(!proposer.state().is_leader());
     }
 
     #[test]
@@ -187,7 +203,7 @@ mod tests {
         proposer.observe_ballot(Ballot(100, 1));
 
         proposer.prepare();
-        assert!(proposer.status() != ProposerStatus::Leader);
+        assert!(!proposer.state().is_leader());
         assert_eq!(Some(Ballot(101, 1)), proposer.highest_observed_ballot());
 
         assert!(match proposer.state {
@@ -198,7 +214,7 @@ mod tests {
         });
 
         proposer.receive_promise(2, Ballot(101, 1));
-        assert!(proposer.status() == ProposerStatus::Leader);
+        assert!(proposer.state().is_leader());
         assert_eq!(Some(Ballot(101, 1)), proposer.highest_observed_ballot());
         assert!(match proposer.state {
             ProposerState::Leader { proposal: Ballot(101, 1) } => true,
@@ -221,7 +237,7 @@ mod tests {
 
         // receive reject for the wrong ballot
         proposer.receive_reject(3, Ballot(5, 1), Ballot(6, 2));
-        assert!(proposer.status() != ProposerStatus::Leader);
+        assert!(!proposer.state().is_leader());
         assert_eq!(Some(Ballot(101, 1)), proposer.highest_observed_ballot());
         assert!(match proposer.state {
             ProposerState::Candidate { proposal: Ballot(101, 1), .. } => true,
@@ -230,7 +246,7 @@ mod tests {
 
         // receive reject for incorrect ballots
         proposer.receive_reject(3, Ballot(101, 1), Ballot(100, 0));
-        assert!(proposer.status() != ProposerStatus::Leader);
+        assert!(!proposer.state().is_leader());
         assert_eq!(Some(Ballot(101, 1)), proposer.highest_observed_ballot());
         assert!(match proposer.state {
             ProposerState::Candidate { proposal: Ballot(101, 1), .. } => true,
@@ -238,7 +254,7 @@ mod tests {
         });
 
         proposer.receive_reject(3, Ballot(101, 1), Ballot(102, 2));
-        assert!(proposer.status() != ProposerStatus::Leader);
+        assert!(!proposer.state().is_leader());
         assert_eq!(Some(Ballot(102, 2)), proposer.highest_observed_ballot());
         assert!(match proposer.state {
             ProposerState::Follower => true,
