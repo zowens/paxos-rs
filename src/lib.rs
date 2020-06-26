@@ -32,6 +32,7 @@ extern crate test;
 mod acceptor;
 mod commands;
 mod config;
+mod liveness;
 mod proposer;
 mod replica;
 mod statemachine;
@@ -81,6 +82,21 @@ impl Ord for Ballot {
             o => o,
         }
     }
+}
+
+/// Logic implementing distinguished proposer and learner status.
+pub trait LeaderElection {
+    /// Proposes that the current node take over leadership
+    fn propose_leadership(&mut self);
+
+    /// Determines if the current node is the leader
+    fn is_leader(&self) -> bool;
+}
+
+/// Receiver of periodic ticks to drive further processing
+pub trait Tick {
+    /// Runs logic for a tick of an interval
+    fn tick(&mut self);
 }
 
 #[cfg(test)]

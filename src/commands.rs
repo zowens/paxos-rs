@@ -55,11 +55,10 @@ pub trait Commander {
     /// NOTE: Resolutions may arrive out-of-order. No guarantees are made on
     /// slot order.
     fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>);
-
 }
 
-// TODO: is it possible to avoid sending Bytes back to replicas that know of the value?
-
+// TODO: is it possible to avoid sending Bytes back to replicas that know of the
+// value?
 
 #[derive(PartialEq, Eq, Debug)]
 #[cfg(test)]

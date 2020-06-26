@@ -147,31 +147,18 @@ pub enum ProposerState {
 impl ProposerState {
     /// Proposer is the distinguished proposer
     pub fn is_leader(&self) -> bool {
-        if let ProposerState::Leader { .. } = *self {
-            true
-        } else {
-            false
-        }
+        if let ProposerState::Leader { .. } = *self { true } else { false }
     }
 
     /// Proposer is a candidate for leader
     pub fn is_candidate(&self) -> bool {
-        if let ProposerState::Candidate { .. } = *self {
-            true
-        } else {
-            false
-        }
+        if let ProposerState::Candidate { .. } = *self { true } else { false }
     }
 
     /// Prooser is a follower of another replica or uninitiated
     pub fn is_follower(&self) -> bool {
-        if let ProposerState::Follower { .. } = *self {
-            true
-        } else {
-            false
-        }
+        if let ProposerState::Follower { .. } = *self { true } else { false }
     }
-
 }
 
 #[cfg(test)]
