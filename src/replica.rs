@@ -3,7 +3,7 @@ use crate::{
     commands::*,
     proposer::{Proposer, ProposerState},
     window::{SlotMutRef, SlotWindow},
-    Ballot, Configuration, NodeId, ReplicatedState, Slot,
+    Ballot, Configuration, LeaderElection, NodeId, ReplicatedState, Slot,
 };
 use bytes::Bytes;
 use std::mem;
@@ -146,8 +146,7 @@ impl<S: Sender> Commander for Replica<S> {
             ProposerState::Follower if self.proposer.highest_observed_ballot().is_none() => {
                 // no known proposers, go through prepare cycle
                 self.proposal_queue.push(val);
-                let bal = self.proposer.prepare();
-                self.broadcast(|c| c.prepare(bal));
+                self.propose_leadership();
             }
             ProposerState::Follower => {
                 self.sender.send_to(self.proposer.highest_observed_ballot().unwrap().1, |c| {
@@ -243,7 +242,9 @@ impl<S: Sender> Commander for Replica<S> {
                     let mut open_slot = empty_slot.fill();
                     open_slot.acceptor().receive_accept(bal, val)
                 }
-                SlotMutRef::Open(ref mut open_slot) => open_slot.acceptor().receive_accept(bal, val),
+                SlotMutRef::Open(ref mut open_slot) => {
+                    open_slot.acceptor().receive_accept(bal, val)
+                }
                 _ => return,
             };
 
@@ -278,7 +279,11 @@ impl<S: Sender> Commander for Replica<S> {
             match self.window.slot_mut(slot) {
                 SlotMutRef::Open(ref mut open_ref) => {
                     open_ref.acceptor().receive_accepted(node, bal);
-                    open_ref.acceptor().resolution().into_iter().for_each(|res| resolutions.push((slot, res.1)));
+                    open_ref
+                        .acceptor()
+                        .resolution()
+                        .into_iter()
+                        .for_each(|res| resolutions.push((slot, res.1)));
                 }
                 SlotMutRef::Empty(_) => {
                     warn!("Received accepted() for slot {} which is unknown", slot);
@@ -307,6 +312,26 @@ impl<S: Sender> Commander for Replica<S> {
 
         // execute resolved decisions
         self.execute_decisions();
+    }
+}
+
+impl<S: Sender> LeaderElection for Replica<S> {
+    fn propose_leadership(&mut self) {
+        match *self.proposer.state() {
+            ProposerState::Candidate { proposal, .. } => self.broadcast(|c| c.prepare(proposal)),
+            ProposerState::Follower => {
+                let bal = self.proposer.prepare();
+                self.broadcast(|c| c.prepare(bal));
+            }
+            ProposerState::Leader { proposal } => {
+                // TODO: do we want a special sync here?
+                self.broadcast(|c| c.accept(proposal, vec![]));
+            }
+        }
+    }
+
+    fn is_leader(&self) -> bool {
+        self.proposer.state().is_leader()
     }
 }
 
@@ -405,7 +430,10 @@ mod tests {
         replica.promise(2, Ballot(0, 4), Vec::new());
 
         (0..4).for_each(|i| {
-            assert_eq!(&[Command::Accept(Ballot(0, 4), vec![(0, "123".into())])], &replica.sender[i])
+            assert_eq!(
+                &[Command::Accept(Ballot(0, 4), vec![(0, "123".into())])],
+                &replica.sender[i]
+            )
         });
 
         assert!(replica.sender.resolutions().is_empty());
@@ -426,9 +454,7 @@ mod tests {
 
         (0..4).for_each(|i| {
             assert_eq!(
-                &[
-                    Command::Accept(Ballot(0, 4), vec![(0, "456".into()), (1, "123".into())])
-                ],
+                &[Command::Accept(Ballot(0, 4), vec![(0, "456".into()), (1, "123".into())])],
                 &replica.sender[i]
             )
         });
@@ -451,13 +477,15 @@ mod tests {
 
         (0..4).for_each(|i| {
             assert_eq!(
-                &[
-                    Command::Accept(Ballot(0, 4), vec![
+                &[Command::Accept(
+                    Ballot(0, 4),
+                    vec![
                         (0, Bytes::default()),
                         (1, Bytes::default()),
                         (2, "456".into()),
-                        (3, "123".into())])
-                ],
+                        (3, "123".into())
+                    ]
+                )],
                 &replica.sender[i]
             );
         });
@@ -493,14 +521,11 @@ mod tests {
         assert!(replica.sender.resolutions().is_empty());
         replica.sender.clear();
 
-
         // try with multiple accepts
         replica.accept(Ballot(10, 2), vec![(1, "foo".into()), (2, "bar".into())]);
         assert_eq!(Some(Ballot(10, 2)), replica.proposer.highest_observed_ballot());
         assert_eq!(&[Command::Accepted(4, Ballot(10, 2), vec![1, 2])], &replica.sender[2]);
-
     }
-
 
     #[test]
     fn replica_reject() {
@@ -518,7 +543,6 @@ mod tests {
         assert!(replica.sender.resolutions().is_empty());
     }
 
-
     #[test]
     fn replica_accepted() {
         let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
@@ -535,7 +559,10 @@ mod tests {
 
         replica.accepted(2, Ballot(0, 4), vec![0]);
         (0..4).for_each(|i| {
-            assert_eq!(&[Command::Resolution(Ballot(0, 4), vec![(0, "123".into())])], &replica.sender[i])
+            assert_eq!(
+                &[Command::Resolution(Ballot(0, 4), vec![(0, "123".into())])],
+                &replica.sender[i]
+            )
         });
 
         assert_eq!(&[(0, "123".into())], replica.sender.resolutions());
@@ -549,10 +576,16 @@ mod tests {
         replica.accepted(1, Ballot(0, 4), vec![1, 2]);
 
         (0..4).for_each(|i| {
-            assert_eq!(&[Command::Resolution(Ballot(0, 4), vec![(1, "foo".into()), (2, "bar".into())])], &replica.sender[i])
+            assert_eq!(
+                &[Command::Resolution(Ballot(0, 4), vec![(1, "foo".into()), (2, "bar".into())])],
+                &replica.sender[i]
+            )
         });
 
-        assert_eq!(&[(0, "123".into()), (1, "foo".into()), (2, "bar".into())], replica.sender.resolutions());
+        assert_eq!(
+            &[(0, "123".into()), (1, "foo".into()), (2, "bar".into())],
+            replica.sender.resolutions()
+        );
 
         // allow multiple accepts, but only when the slots receive quorum!
         replica.proposal("foo2".into());
@@ -563,12 +596,17 @@ mod tests {
         replica.accepted(1, Ballot(0, 4), vec![3]);
 
         (0..4).for_each(|i| {
-            assert_eq!(&[Command::Resolution(Ballot(0, 4), vec![(3, "foo2".into())])], &replica.sender[i])
+            assert_eq!(
+                &[Command::Resolution(Ballot(0, 4), vec![(3, "foo2".into())])],
+                &replica.sender[i]
+            )
         });
 
-        assert_eq!(&[(0, "123".into()), (1, "foo".into()), (2, "bar".into()), (3, "foo2".into())], replica.sender.resolutions());
+        assert_eq!(
+            &[(0, "123".into()), (1, "foo".into()), (2, "bar".into()), (3, "foo2".into())],
+            replica.sender.resolutions()
+        );
     }
-
 
     #[test]
     fn replica_resolution() {
@@ -591,6 +629,56 @@ mod tests {
             &[(0, "000".into()), (3, "3".into()), (4, "123".into())],
             replica.sender.resolutions()
         );
+    }
+
+    #[test]
+    fn replica_is_leader() {
+        let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
+        assert!(!replica.is_leader());
+
+        let bal = replica.proposer.prepare();
+        assert!(!replica.is_leader());
+
+        replica.promise(0, bal, vec![]);
+        assert!(!replica.is_leader());
+
+        replica.promise(1, bal, vec![]);
+        assert!(replica.is_leader());
+    }
+
+    #[test]
+    fn replica_propose_leadership_as_follower() {
+        let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
+        assert!(!replica.is_leader());
+        replica.propose_leadership();
+
+        (0..4).for_each(|i| assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[i]));
+    }
+
+    #[test]
+    fn replica_propose_leadership_as_candidate() {
+        let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
+        assert!(!replica.is_leader());
+        replica.propose_leadership();
+        replica.sender.clear();
+
+        replica.propose_leadership();
+        (0..4).for_each(|i| assert_eq!(&[Command::Prepare(Ballot(0, 4))], &replica.sender[i]));
+    }
+
+    #[test]
+    fn replica_propose_leadership_as_leader() {
+        let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
+        assert!(!replica.is_leader());
+        replica.propose_leadership();
+        replica.promise(0, Ballot(0, 4), vec![]);
+        replica.promise(1, Ballot(0, 4), vec![]);
+        assert!(replica.is_leader());
+        replica.sender.clear();
+
+        replica.propose_leadership();
+        (0..4)
+            .for_each(|i| assert_eq!(&[Command::Accept(Ballot(0, 4), vec![])], &replica.sender[i]));
     }
 
     #[derive(Default)]
