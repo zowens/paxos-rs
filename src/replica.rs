@@ -1,7 +1,7 @@
 use crate::{
     acceptor::{AcceptResponse, PrepareResponse},
     commands::*,
-    proposer::{Proposer, ProposerStatus},
+    proposer::{Proposer, ProposerState},
     window::{SlotMutRef, SlotWindow},
     Ballot, Configuration, NodeId, ReplicatedState, Slot,
 };
@@ -56,7 +56,7 @@ impl<S: Sender> Replica<S> {
 
     /// Broadcast ACCEPT messages once the proposer has phase 1 quorum
     fn drive_accept(&mut self) {
-        if self.proposer.status() != ProposerStatus::Leader {
+        if !self.proposer.state().is_leader() {
             return;
         }
 
@@ -104,7 +104,7 @@ impl<S: Sender> Replica<S> {
 
     /// Forwards pending proposals to the new leader
     fn forward(&mut self) {
-        if self.proposer.status() != ProposerStatus::Follower || self.proposal_queue.is_empty() {
+        if !self.proposer.state().is_follower() || self.proposal_queue.is_empty() {
             return;
         }
 
@@ -142,26 +142,25 @@ impl<S: Sender> Replica<S> {
 impl<S: Sender> Commander for Replica<S> {
     fn proposal(&mut self, val: Bytes) {
         // redirect to the distinguished proposer or start PREPARE
-        match self.proposer.status() {
-            ProposerStatus::Follower if self.proposer.highest_observed_ballot().is_none() => {
+        match *self.proposer.state() {
+            ProposerState::Follower if self.proposer.highest_observed_ballot().is_none() => {
                 // no known proposers, go through prepare cycle
                 self.proposal_queue.push(val);
                 let bal = self.proposer.prepare();
                 self.broadcast(|c| c.prepare(bal));
             }
-            ProposerStatus::Follower => {
+            ProposerState::Follower => {
                 self.sender.send_to(self.proposer.highest_observed_ballot().unwrap().1, |c| {
                     c.proposal(val)
                 });
             }
-            ProposerStatus::Candidate => {
+            ProposerState::Candidate { .. } => {
                 // still waiting for promises, queue up the value
                 // TODO: should this re-send some PREPARE messages?
                 self.proposal_queue.push(val);
             }
-            ProposerStatus::Leader => {
+            ProposerState::Leader { proposal: bal } => {
                 // node is the distinguished proposer
-                let bal = self.proposer.highest_observed_ballot().unwrap();
                 let slot = {
                     let mut slot_ref = self.window.next_slot();
                     slot_ref.acceptor().notice_value(bal, val.clone());
@@ -210,7 +209,7 @@ impl<S: Sender> Commander for Replica<S> {
     }
 
     fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<(Slot, Ballot, Bytes)>) {
-        if self.proposer.status() != ProposerStatus::Candidate {
+        if !self.proposer.state().is_candidate() {
             return;
         }
 
@@ -512,7 +511,7 @@ mod tests {
 
         replica.reject(2, Ballot(0, 4), Ballot(5, 3));
         assert_eq!(Some(Ballot(5, 3)), replica.proposer.highest_observed_ballot());
-        assert_eq!(ProposerStatus::Follower, replica.proposer.status());
+        assert!(replica.proposer.state().is_follower());
         assert_eq!(&[Command::Proposal("123".into())], &replica.sender[3]);
         (0..3).for_each(|i| assert!(replica.sender[i].is_empty()));
 
