@@ -18,7 +18,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Server,
 };
-use paxos::{Configuration, NodeId, Replica};
+use paxos::{Configuration, NodeId, Replica, Liveness};
 use std::{env::args, net::SocketAddr, process::exit};
 
 fn config() -> paxos::Configuration {
@@ -58,8 +58,9 @@ async fn main() {
     let conf = config();
     let addr: SocketAddr = format!("127.0.0.1:808{}", conf.current()).parse().unwrap();
     let sender = commands::PaxosSender::new(&conf);
-    let handler = service::Handler::new(Replica::new(sender, conf));
-    let _ = handler.spawn_cleanup_loop();
+    let handler = service::Handler::new(Liveness::new(Replica::new(sender, conf)));
+    let cleanup = handler.spawn_cleanup_loop();
+    let tick = handler.spawn_tick_loop();
 
     let service = make_service_fn(move |_| {
         let handler = handler.clone();
@@ -73,6 +74,8 @@ async fn main() {
 
     let server = Server::bind(&addr).serve(service);
     if let Err(e) = server.await {
+        drop(tick);
+        drop(cleanup);
         eprintln!("server error: {}", e);
     }
 }

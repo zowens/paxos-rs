@@ -17,6 +17,10 @@ impl<R: Commander + LeaderElection> Liveness<R> {
             leader_election: Timeout::new(Duration::from_secs(2)),
         }
     }
+
+    pub fn inner_mut(&mut self) -> &mut R {
+        &mut self.inner
+    }
 }
 
 impl<R: Commander + LeaderElection> Commander for Liveness<R> {
@@ -64,6 +68,7 @@ impl<R: Commander + LeaderElection> Tick for Liveness<R> {
         };
 
         if lapsed {
+            info!("Leadership timeout lapsed, proposing leadership");
             self.inner.propose_leadership();
             self.leader_election.clear();
         }
@@ -95,6 +100,7 @@ impl Timeout {
     }
 
     fn bump(&mut self) {
+        trace!("Leadership timeout bumped");
         self.latest_message = Some(Instant::now());
     }
 

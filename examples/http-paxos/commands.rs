@@ -42,7 +42,7 @@ impl PaxosSender {
     }
 }
 
-pub fn invoke(replica: &mut paxos::Replica<PaxosSender>, command: Bytes) {
+pub fn invoke<C: Commander>(replica: &mut C, command: Bytes) {
     let cmd = match deserialize(&command) {
         Ok(cmd) => cmd,
         Err(_) => return,

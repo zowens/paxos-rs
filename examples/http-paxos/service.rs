@@ -1,18 +1,18 @@
 use crate::{commands, kvstore::KvCommand};
 use bytes::Bytes;
 use hyper::{Body, Method, Request, Response, StatusCode};
-use paxos::{Commander, Sender};
+use paxos::{Commander, Sender, Tick};
 use rand::random;
 use std::{sync::Arc, time::Duration};
 use tokio::{self, sync::Mutex, task::JoinHandle, time::interval};
 
 #[derive(Clone)]
 pub struct Handler {
-    replica: Arc<Mutex<paxos::Replica<commands::PaxosSender>>>,
+    replica: Arc<Mutex<paxos::Liveness<paxos::Replica<commands::PaxosSender>>>>,
 }
 
 impl Handler {
-    pub fn new(replica: paxos::Replica<commands::PaxosSender>) -> Handler {
+    pub fn new(replica: paxos::Liveness<paxos::Replica<commands::PaxosSender>>) -> Handler {
         Handler { replica: Arc::new(Mutex::new(replica)) }
     }
 
@@ -25,7 +25,21 @@ impl Handler {
                 ticks.tick().await;
 
                 let mut replica = replica_arch_timer.lock().await;
-                replica.sender_mut().state_machine().prune_listeners();
+                replica.inner_mut().sender_mut().state_machine().prune_listeners();
+            }
+        })
+    }
+
+    /// start a loop for liveness functionality
+    pub fn spawn_tick_loop(&self) -> JoinHandle<()> {
+        let replica_arch_timer = self.replica.clone();
+        tokio::spawn(async move {
+            let mut ticks = interval(Duration::from_millis(100));
+            loop {
+                ticks.tick().await;
+
+                let mut replica = replica_arch_timer.lock().await;
+                replica.tick();
             }
         })
     }
@@ -37,7 +51,7 @@ impl Handler {
                 {
                     let cmd = hyper::body::to_bytes(req.into_body()).await?;
                     let mut replica = self.replica.lock().await;
-                    commands::invoke(&mut replica, cmd);
+                    commands::invoke(&mut replica as &mut paxos::Liveness<_>, cmd);
                 }
 
                 respond(StatusCode::ACCEPTED)
@@ -47,7 +61,7 @@ impl Handler {
                 let id = random::<u64>();
                 let receiver = {
                     let mut replica = self.replica.lock().await;
-                    let receiver = replica.sender_mut().state_machine().register_set(id);
+                    let receiver = replica.inner_mut().sender_mut().state_machine().register_set(id);
                     replica.proposal(KvCommand::Set { request_id: id, key, value }.into());
                     receiver
                 };
@@ -65,7 +79,7 @@ impl Handler {
                 let id = random::<u64>();
                 let receiver = {
                     let mut replica = self.replica.lock().await;
-                    let receiver = replica.sender_mut().state_machine().register_get(id);
+                    let receiver = replica.inner_mut().sender_mut().state_machine().register_get(id);
                     replica.proposal(KvCommand::Get { request_id: id, key }.into());
                     receiver
                 };
