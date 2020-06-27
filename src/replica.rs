@@ -122,10 +122,12 @@ impl<S: Sender> Replica<S> {
     /// Executes commands that have been decided.
     fn execute_decisions(&mut self) {
         for (slot, val) in self.window.drain_decisions() {
+            trace!("Resolved slot {}", slot);
             if val.len() > 0 {
                 self.sender.state_machine().execute(slot, val);
             }
         }
+        trace!("Remaining open slot range: {:?}", self.window.open_range());
     }
 
     fn broadcast<F>(&mut self, f: F)

@@ -109,8 +109,6 @@ impl SlotWindow {
 
         // move resolved slots into the decided vector
         if let Some(i) = last_resolved {
-            trace!("Filled up to slot {}", i);
-
             self.open_min_slot += (i as u64) + 1;
             let resolutions = self.open.drain(0..=i).map(|open_slot| {
                 let (bal, val) = open_slot.resolution().unwrap();
