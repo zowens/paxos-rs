@@ -11,12 +11,13 @@
 //! ```rust,no_run
 //! # extern crate paxos;
 //! # use paxos::{Replica, Configuration};
+//! # use bytes::Bytes;
 //!
 //! # fn main() {
 //! let config = Configuration::new(
 //!     0u32,
-//!     vec![(1, "127.0.0.1:4001".parse().unwrap()),
-//!          (2, "127.0.0.1:4002".parse().unwrap())].into_iter());
+//!     vec![(1, Bytes::from("127.0.0.1:4001").into()),
+//!          (2, Bytes::from("127.0.0.1:4002").into())].into_iter());
 //!
 //! unimplemented!("TODO: finish example");
 //! # }
@@ -41,7 +42,7 @@ mod window;
 use std::cmp;
 
 pub use commands::{Commander, Sender};
-pub use config::{Configuration, PeerIntoIter, PeerIter};
+pub use config::{Configuration, NodeMetadata};
 pub use liveness::Liveness;
 pub use replica::Replica;
 pub use statemachine::ReplicatedState;

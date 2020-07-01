@@ -75,7 +75,7 @@ impl SlotWindow {
 
     /// Opens the next slot
     pub fn next_slot(&mut self) -> OpenSlotMutRef {
-        if self.open.last().is_some() && !self.open.last().unwrap().highest_value().is_some() {
+        if self.open.last().is_some() && self.open.last().unwrap().highest_value().is_none() {
             return OpenSlotMutRef { i: self.open.len() - 1, window: self };
         }
 
@@ -112,7 +112,7 @@ impl SlotWindow {
             self.open_min_slot += (i as u64) + 1;
             let resolutions = self.open.drain(0..=i).map(|open_slot| {
                 let (bal, val) = open_slot.resolution().unwrap();
-                ResolvedSlot(bal, val.clone())
+                ResolvedSlot(bal, val)
             });
             self.decided.extend(resolutions);
             self.fill_open_slots(self.open_min_slot);

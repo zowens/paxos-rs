@@ -50,17 +50,14 @@ impl Acceptor {
     /// Resolves a value within the learner state
     pub fn resolve(&mut self, bal: Ballot, val: Bytes) {
         // ignore if the acceptor is already resolved
-        match self.state {
-            AcceptorState::Resolved { accepted, ref value } => {
-                if accepted != bal || val != value {
-                    warn!(
-                        "Attempt to resolve to a different ballot or value. Accepted=<{:?},{:?}>, Attempted=<{:?},{:?}>",
-                        accepted, value, bal, val
-                    );
-                }
-                return;
+        if let AcceptorState::Resolved { accepted, ref value } = self.state {
+            if accepted != bal || val != value {
+                warn!(
+                    "Attempt to resolve to a different ballot or value. Accepted=<{:?},{:?}>, Attempted=<{:?},{:?}>",
+                    accepted, value, bal, val
+                );
             }
-            _ => {}
+            return;
         }
 
         self.state = AcceptorState::Resolved { accepted: bal, value: val };

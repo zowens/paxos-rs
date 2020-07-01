@@ -18,7 +18,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Server,
 };
-use paxos::{Configuration, Liveness, NodeId, Replica};
+use paxos::{Configuration, Liveness, NodeId, NodeMetadata, Replica};
 use std::{env::args, net::SocketAddr, process::exit};
 
 fn config() -> paxos::Configuration {
@@ -45,9 +45,9 @@ fn config() -> paxos::Configuration {
 
     Configuration::new(
         node_id,
-        (0u32..3)
-            .filter(|n| *n != node_id)
-            .map(|n| (n as NodeId, format!("127.0.0.1:808{}", n).parse().unwrap())),
+        (0u32..3).filter(|n| *n != node_id).map(|n| {
+            (n as NodeId, NodeMetadata(format!("http://127.0.0.1:808{}/paxos", n).into()))
+        }),
     )
 }
 
