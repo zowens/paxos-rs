@@ -55,6 +55,10 @@ pub trait Commander {
     /// NOTE: Resolutions may arrive out-of-order. No guarantees are made on
     /// slot order.
     fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>);
+
+    /// Request sent to a distinguished learner to catch up to latest slot
+    /// values.
+    fn catchup(&mut self, node: NodeId, slots: Vec<Slot>);
 }
 
 // TODO: is it possible to avoid sending Bytes back to replicas that know of the
@@ -70,6 +74,7 @@ pub enum Command {
     Reject(NodeId, Ballot, Ballot),
     Accepted(NodeId, Ballot, Vec<Slot>),
     Resolution(Ballot, Vec<(Slot, Bytes)>),
+    Catchup(NodeId, Vec<Slot>),
 }
 
 #[cfg(test)]
@@ -103,5 +108,9 @@ where
 
     fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>) {
         self.extend(Some(Command::Resolution(bal, values)));
+    }
+
+    fn catchup(&mut self, node: NodeId, slots: Vec<Slot>) {
+        self.extend(Some(Command::Catchup(node, slots)));
     }
 }

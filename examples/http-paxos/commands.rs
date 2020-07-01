@@ -15,6 +15,7 @@ enum Command {
     Reject(NodeId, #[serde(with = "BallotDef")] Ballot, #[serde(with = "BallotDef")] Ballot),
     Accepted(NodeId, #[serde(with = "BallotDef")] Ballot, Vec<Slot>),
     Resolution(#[serde(with = "BallotDef")] Ballot, Vec<(Slot, Bytes)>),
+    Catchup(NodeId, Vec<Slot>),
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -60,6 +61,7 @@ pub fn invoke<C: Commander>(replica: &mut C, command: Bytes) {
         Command::Reject(node, proposed, preempted) => replica.reject(node, proposed, preempted),
         Command::Accepted(node, bal, slots) => replica.accepted(node, bal, slots),
         Command::Resolution(bal, vals) => replica.resolution(bal, vals),
+        Command::Catchup(node, slots) => replica.catchup(node, slots),
     };
 }
 
@@ -130,5 +132,9 @@ impl Commander for PaxosCommander {
 
     fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>) {
         self.send(Command::Resolution(bal, values));
+    }
+
+    fn catchup(&mut self, node: NodeId, slots: Vec<Slot>) {
+        self.send(Command::Catchup(node, slots));
     }
 }

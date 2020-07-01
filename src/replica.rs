@@ -314,6 +314,56 @@ impl<S: Sender> Commander for Replica<S> {
 
         // execute resolved decisions
         self.execute_decisions();
+
+        // Send catchup for holds in the decision making
+        // We can skip catchup if we're caught up and the range only
+        // contains one slot
+        let range = self.window.open_range();
+        if range.end > range.start + 1 {
+            let slots = range
+                .filter(|slot| {
+                    if let SlotMutRef::Resolved(..) = self.window.slot_mut(*slot) {
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect::<Vec<Slot>>();
+            trace!("Sending catchup for slots {:?}", slots);
+            let leader = self.proposer.highest_observed_ballot().unwrap().1;
+            let node = self.config.current();
+            self.sender.send_to(leader, |c| c.catchup(node, slots));
+        }
+    }
+
+    fn catchup(&mut self, node: NodeId, mut slots: Vec<Slot>) {
+        // TODO: do we want to redirect at this point? Dropping is certainly safer
+        if !self.is_leader() {
+            return;
+        }
+
+        slots.sort();
+
+        let mut buf = Vec::with_capacity(slots.len());
+        let mut run_bal: Option<Ballot> = None;
+
+        for slot in slots.into_iter() {
+            if let SlotMutRef::Resolved(bal, val) = self.window.slot_mut(slot) {
+                // if we hit a run with a different ballot, send the resolutions we have so far
+                if run_bal.is_some() && run_bal != Some(bal) && !buf.is_empty() {
+                    let next_buf_cap = buf.capacity().checked_sub(buf.len()).unwrap_or(0);
+                    let send_buf = mem::replace(&mut buf, Vec::with_capacity(next_buf_cap));
+                    let send_bal = run_bal.unwrap();
+                    self.sender.send_to(node, move |c| c.resolution(send_bal, send_buf));
+                }
+                run_bal = Some(bal);
+                buf.push((slot, val));
+            }
+        }
+
+        if !buf.is_empty() && run_bal.is_some() {
+            self.sender.send_to(node, move |c| c.resolution(run_bal.unwrap(), buf));
+        }
     }
 }
 
@@ -620,12 +670,17 @@ mod tests {
             SlotMutRef::Resolved(Ballot(1, 2), val) if val == "123" => true,
             _ => false,
         });
+        assert_eq!(&[Command::Catchup(4, vec![0, 1, 2, 3])], &replica.sender[2]);
+        replica.sender.clear();
 
         replica.resolution(Ballot(1, 2), vec![(1, Bytes::default()), (0, "000".into())]);
         assert_eq!(&[(0, "000".into())], replica.sender.resolutions());
+        assert_eq!(&[Command::Catchup(4, vec![2, 3])], &replica.sender[2]);
+        replica.sender.clear();
 
         // fill hole 1,2
         replica.resolution(Ballot(1, 2), vec![(2, Bytes::default()), (3, "3".into())]);
+        assert!(replica.sender[2].is_empty());
 
         assert_eq!(
             &[(0, "000".into()), (3, "3".into()), (4, "123".into())],
@@ -681,6 +736,72 @@ mod tests {
         replica.propose_leadership();
         (0..4)
             .for_each(|i| assert_eq!(&[Command::Accept(Ballot(0, 4), vec![])], &replica.sender[i]));
+    }
+
+    #[test]
+    fn replica_catchup() {
+        let mut replica = Replica::new(VecSender::default(), CONFIG.clone());
+        // put in some slots
+        // 0, 1, 2 are resolved
+        let resolved_slots = vec![
+            (Ballot(0, 1), "123".into()),
+            (Ballot(0, 1), "456".into()),
+            (Ballot(2, 1), "abc".into()),
+        ];
+        for (bal, val) in resolved_slots {
+            replica.window.next_slot().acceptor().resolve(bal, val);
+        }
+
+        // slot 3 is still open
+        {
+            replica.window.next_slot().acceptor().receive_accept(Ballot(2, 1), "xyz".into());
+        }
+
+        // replica that is not the leader cannot respond to catchup
+        replica.catchup(2, vec![0, 1, 2]);
+        assert!(replica.sender[2].is_empty());
+
+        // make the replica the leader
+        assert!(!replica.is_leader());
+        replica.propose_leadership();
+        (0..=1).for_each(|n| replica.promise(n, Ballot(0, 4), vec![]));
+        replica.promise(1, Ballot(0, 4), vec![]);
+        assert!(replica.is_leader());
+        replica.sender.clear();
+
+        // request catch up for non-closed slots
+        replica.catchup(2, vec![3, 4, 5]);
+        assert!(replica.sender[2].is_empty());
+
+        // request catchup for open slots
+        replica.catchup(2, vec![0, 1, 2, 3]);
+        assert_eq!(
+            &[
+                Command::Resolution(Ballot(0, 1), vec![(0, "123".into()), (1, "456".into())]),
+                Command::Resolution(Ballot(2, 1), vec![(2, "abc".into())])
+            ],
+            &replica.sender[2]
+        );
+
+        // resolutions must come in order
+        replica.catchup(0, vec![2, 0, 1, 3]);
+        assert_eq!(
+            &[
+                Command::Resolution(Ballot(0, 1), vec![(0, "123".into()), (1, "456".into())]),
+                Command::Resolution(Ballot(2, 1), vec![(2, "abc".into())])
+            ],
+            &replica.sender[0]
+        );
+
+        // resolutions can contain holes
+        replica.catchup(3, vec![1, 2]);
+        assert_eq!(
+            &[
+                Command::Resolution(Ballot(0, 1), vec![(1, "456".into())]),
+                Command::Resolution(Ballot(2, 1), vec![(2, "abc".into())])
+            ],
+            &replica.sender[3]
+        );
     }
 
     #[derive(Default)]

@@ -61,7 +61,8 @@ impl Handler {
                 let id = random::<u64>();
                 let receiver = {
                     let mut replica = self.replica.lock().await;
-                    let receiver = replica.inner_mut().sender_mut().state_machine().register_set(id);
+                    let receiver =
+                        replica.inner_mut().sender_mut().state_machine().register_set(id);
                     replica.proposal(KvCommand::Set { request_id: id, key, value }.into());
                     receiver
                 };
@@ -79,7 +80,8 @@ impl Handler {
                 let id = random::<u64>();
                 let receiver = {
                     let mut replica = self.replica.lock().await;
-                    let receiver = replica.inner_mut().sender_mut().state_machine().register_get(id);
+                    let receiver =
+                        replica.inner_mut().sender_mut().state_machine().register_get(id);
                     replica.proposal(KvCommand::Get { request_id: id, key }.into());
                     receiver
                 };

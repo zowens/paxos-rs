@@ -42,8 +42,8 @@ use std::cmp;
 
 pub use commands::{Commander, Sender};
 pub use config::{Configuration, PeerIntoIter, PeerIter};
-pub use replica::Replica;
 pub use liveness::Liveness;
+pub use replica::Replica;
 pub use statemachine::ReplicatedState;
 
 /// Increasing sequence number of Paxos instances.
