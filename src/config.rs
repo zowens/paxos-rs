@@ -1,29 +1,38 @@
 use crate::NodeId;
-use std::{
-    cmp::Ordering,
-    collections::{hash_map, HashMap},
-    fmt,
-    net::SocketAddr,
-};
+use bytes::Bytes;
+use std::{collections::HashMap, fmt};
+
+#[derive(Default, Clone, Debug, Eq, PartialEq)]
+/// Opaque, applicaiton specific metadata for nodes in the system
+pub struct NodeMetadata(pub Bytes);
+
+impl From<Bytes> for NodeMetadata {
+    fn from(v: Bytes) -> NodeMetadata {
+        NodeMetadata(v)
+    }
+}
+
+impl Into<Bytes> for NodeMetadata {
+    fn into(self) -> Bytes {
+        self.0
+    }
+}
 
 /// Configuration holds the state of the membership of the cluster.
 #[derive(Clone)]
 pub struct Configuration {
     current: NodeId,
-    peers: HashMap<NodeId, SocketAddr>,
-    socket_to_peer: HashMap<SocketAddr, NodeId>,
+    peers: HashMap<NodeId, NodeMetadata>,
 }
 
 impl Configuration {
     /// Creates a new configuration
     pub fn new<I>(current: NodeId, peers: I) -> Configuration
     where
-        I: Iterator<Item = (NodeId, SocketAddr)>,
+        I: Iterator<Item = (NodeId, NodeMetadata)>,
     {
-        let peers: HashMap<NodeId, SocketAddr> = peers.collect();
-        let socket_to_peer: HashMap<SocketAddr, NodeId> =
-            peers.iter().map(|e| (*e.1, *e.0)).collect();
-        Configuration { current, peers, socket_to_peer }
+        let peers: HashMap<NodeId, NodeMetadata> = peers.collect();
+        Configuration { current, peers }
     }
 
     /// Size of phase 1 and phase 2 quorums.
@@ -39,52 +48,25 @@ impl Configuration {
     }
 
     /// Iterator containing `NodeId` values of peers
-    pub fn peers(&self) -> PeerIntoIter {
-        PeerIntoIter { r: &self }
+    pub fn peer_node_ids<'a>(&'a self) -> impl Iterator<Item = NodeId> + 'a {
+        self.peers.keys().copied()
     }
 
-    /// Gets all addresses contained in the configuration
-    pub fn addresses<'a>(&'a self) -> impl Iterator<Item = (NodeId, SocketAddr)> + 'a {
-        self.peers.iter().map(|(node, addr)| (*node, *addr))
+    /// Iterator containing all nodes along with their metadata
+    pub fn peers<'a>(&'a self) -> impl Iterator<Item = (NodeId, &NodeMetadata)> + 'a {
+        self.peers.iter().map(|(id, meta)| (*id, meta))
     }
 }
 
 impl fmt::Debug for Configuration {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let quorum_size = self.quorum_size();
+        let (p1_q, p2_q) = self.quorum_size();
         fmt.debug_struct("Configuration")
             .field("current_node_id", &self.current)
             .field("peers", &self.peers)
-            .field("peers_to_socket", &self.socket_to_peer)
-            .field("quorum", &quorum_size)
+            .field("phase_1_quorum", &p1_q)
+            .field("phase_2_quorum", &p2_q)
             .finish()
-    }
-}
-
-/// `IntoIterator` for peer node identifiers
-pub struct PeerIntoIter<'a> {
-    r: &'a Configuration,
-}
-
-impl<'a, 'b: 'a> IntoIterator for &'b PeerIntoIter<'a> {
-    type IntoIter = PeerIter<'a>;
-    type Item = NodeId;
-
-    fn into_iter(self) -> PeerIter<'a> {
-        PeerIter { iter: self.r.peers.keys() }
-    }
-}
-
-/// `Iterator` for the peer node identifiers
-pub struct PeerIter<'a> {
-    iter: hash_map::Keys<'a, NodeId, SocketAddr>,
-}
-
-impl<'a> Iterator for PeerIter<'a> {
-    type Item = NodeId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().cloned()
     }
 }
 
@@ -122,46 +104,30 @@ impl QuorumSet {
 
     /// Flag indicating whether quorum has been reached.
     pub fn has_quorum(&self) -> bool {
-        let s = &self.values;
-        assert!(s.len() > 0);
-        s[s.len() - 1].is_some()
+        self.values.last().unwrap().is_some()
     }
 
     #[inline]
-    fn binary_search(&self, n: NodeId) -> Result<usize, usize> {
-        // TODO: remove binary search in favor of linear
-        self.values.binary_search_by(move |v| match *v {
-            Some(v) => v.cmp(&n),
-            None => Ordering::Greater,
-        })
+    fn search(&self, n: NodeId) -> Result<usize, usize> {
+        self.values.iter().enumerate().find_map(|(i, elem)| {
+            match elem {
+                Some(nd) if *nd == n => Some(Ok(i)),
+                None => Some(Err(i)),
+                _ => None,
+            }
+        }).unwrap_or_else(|| Err(self.values.len()-1))
     }
 
     /// Inserts a node into the set
     pub fn insert(&mut self, n: NodeId) {
-        if self.has_quorum() {
-            return;
-        }
-
-        let loc = self.binary_search(n);
-        if let Err(loc) = loc {
-            // if theres an existing occupant, then move
-            // all the values over to the right to make
-            // a hole for the new value in the correct
-            // place
-            if self.values[loc].is_some() {
-                let len = self.values.len();
-                for i in (loc..len - 1).rev() {
-                    self.values.swap(i, i + 1);
-                }
-            }
-
+        if let Err(loc) = self.search(n) {
             self.values[loc] = Some(n);
         }
     }
 
     /// Flag indicating whether the set contains a given node
     pub fn contains(&self, n: NodeId) -> bool {
-        self.binary_search(n).is_ok()
+        self.search(n).is_ok()
     }
 
     /// Flag indicating whether the set is empty
@@ -208,7 +174,7 @@ mod tests {
         assert!(qs.contains(2));
         assert!(!qs.has_quorum());
         assert!(!qs.is_empty());
-        assert_eq!(&[Some(2), Some(5), Some(7), None], qs.values.as_ref());
+        assert_eq!(&[Some(5), Some(7), Some(2), None], qs.values.as_ref());
 
         qs.insert(6);
         assert!(qs.contains(5));
@@ -217,11 +183,10 @@ mod tests {
         assert!(qs.contains(6));
         assert!(qs.has_quorum());
         assert!(!qs.is_empty());
-        assert_eq!(&[Some(2), Some(5), Some(6), Some(7)], qs.values.as_ref());
+        assert_eq!(&[Some(5), Some(7), Some(2), Some(6)], qs.values.as_ref());
 
-        // ignroe adds when there is quorum
         qs.insert(10);
-        assert_eq!(&[Some(2), Some(5), Some(6), Some(7)], qs.values.as_ref());
+        assert_eq!(&[Some(5), Some(7), Some(2), Some(10)], qs.values.as_ref());
     }
 
     #[test]

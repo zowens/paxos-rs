@@ -31,12 +31,7 @@ impl<S: Sender> Replica<S> {
 
     /// Replace the sender with an alertnate implementation
     pub fn with_sender<A>(self, sender: A) -> Replica<A> {
-        Replica {
-            sender: sender,
-            config: self.config,
-            proposer: self.proposer,
-            window: self.window,
-        }
+        Replica { sender, config: self.config, proposer: self.proposer, window: self.window }
     }
 
     /// Mutable reference to the sender
@@ -117,7 +112,7 @@ impl<S: Sender> Replica<S> {
     fn execute_decisions(&mut self) {
         for (slot, val) in self.window.drain_decisions() {
             trace!("Resolved slot {}", slot);
-            if val.len() > 0 {
+            if !val.is_empty() {
                 self.sender.state_machine().execute(slot, val);
             }
         }
@@ -129,7 +124,7 @@ impl<S: Sender> Replica<S> {
         F: Fn(&mut S::Commander) -> (),
     {
         // TODO: thrifty option
-        for node in self.config.peers().into_iter() {
+        for node in self.config.peer_node_ids().into_iter() {
             self.sender.send_to(node, &f);
         }
     }
@@ -344,12 +339,14 @@ impl<S: Sender> Commander for Replica<S> {
         for slot in slots.into_iter() {
             if let SlotMutRef::Resolved(bal, val) = self.window.slot_mut(slot) {
                 // if we hit a run with a different ballot, send the resolutions we have so far
-                if run_bal.is_some() && run_bal != Some(bal) && !buf.is_empty() {
-                    let next_buf_cap = buf.capacity().checked_sub(buf.len()).unwrap_or(0);
-                    let send_buf = mem::replace(&mut buf, Vec::with_capacity(next_buf_cap));
-                    let send_bal = run_bal.unwrap();
-                    self.sender.send_to(node, move |c| c.resolution(send_bal, send_buf));
+                if let Some(b) = run_bal {
+                    if b != bal && !buf.is_empty() {
+                        let next_buf_cap = buf.capacity().saturating_sub(buf.len());
+                        let send_buf = mem::replace(&mut buf, Vec::with_capacity(next_buf_cap));
+                        self.sender.send_to(node, move |c| c.resolution(b, send_buf));
+                    }
                 }
+
                 run_bal = Some(bal);
                 buf.push((slot, val));
             }
@@ -384,7 +381,7 @@ impl<S: Sender> LeaderElection for Replica<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ReplicatedState;
+    use crate::{NodeMetadata, ReplicatedState};
     use lazy_static::lazy_static;
     use std::ops::Index;
 
@@ -392,10 +389,10 @@ mod tests {
         static ref CONFIG: Configuration = Configuration::new(
             4u32,
             vec![
-                (0, "127.0.0.1:4000".parse().unwrap()),
-                (1, "127.0.0.1:4001".parse().unwrap()),
-                (2, "127.0.0.1:4002".parse().unwrap()),
-                (3, "127.0.0.1:4003".parse().unwrap()),
+                (0, NodeMetadata::default()),
+                (1, NodeMetadata::default()),
+                (2, NodeMetadata::default()),
+                (3, NodeMetadata::default()),
             ]
             .into_iter(),
         );

@@ -4,7 +4,7 @@ use bytes::Bytes;
 use hyper::{client::HttpConnector, Body, Client, Request};
 use paxos::{Ballot, Commander, Configuration, NodeId, Sender, Slot};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, str};
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 enum Command {
@@ -34,9 +34,13 @@ impl PaxosSender {
     pub fn new(config: &Configuration) -> PaxosSender {
         let client = Client::new();
         let peers = config
-            .addresses()
-            .map(|(node, addr)| {
-                (node, PaxosCommander(client.clone(), format!("http://{}/paxos", addr).to_string()))
+            .peers()
+            .into_iter()
+            .map(|(node_id, addr)| {
+                (
+                    node_id,
+                    PaxosCommander(client.clone(), String::from_utf8(addr.0.to_vec()).unwrap()),
+                )
             })
             .collect::<HashMap<NodeId, PaxosCommander>>();
         PaxosSender { peers, state_machine: KeyValueStore::default() }
