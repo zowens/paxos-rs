@@ -18,7 +18,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Server,
 };
-use paxos::{Configuration, NodeId, Replica, Liveness};
+use paxos::{Configuration, Liveness, NodeId, Replica};
 use std::{env::args, net::SocketAddr, process::exit};
 
 fn config() -> paxos::Configuration {

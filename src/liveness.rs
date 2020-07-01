@@ -57,6 +57,10 @@ impl<R: Commander + LeaderElection> Commander for Liveness<R> {
         self.leader_election.bump();
         self.inner.resolution(bal, values);
     }
+
+    fn catchup(&mut self, node: NodeId, slots: Vec<Slot>) {
+        self.inner.catchup(node, slots);
+    }
 }
 
 impl<R: Commander + LeaderElection> Tick for Liveness<R> {
