@@ -14,9 +14,6 @@ pub struct Replica<S> {
     config: Configuration,
     proposer: Proposer,
     window: SlotWindow,
-
-    // TODO: bound the proposal queue
-    proposal_queue: Vec<Bytes>,
 }
 
 impl<S: Sender> Replica<S> {
@@ -28,7 +25,6 @@ impl<S: Sender> Replica<S> {
             sender,
             config,
             proposer: Proposer::new(node, p1_quorum),
-            proposal_queue: Vec::new(),
             window: SlotWindow::new(p2_quorum),
         }
     }
@@ -39,7 +35,6 @@ impl<S: Sender> Replica<S> {
             sender: sender,
             config: self.config,
             proposer: self.proposer,
-            proposal_queue: self.proposal_queue,
             window: self.window,
         }
     }
@@ -64,7 +59,7 @@ impl<S: Sender> Replica<S> {
         assert!(bal.1 == self.config.current());
 
         // add queued proposals to new slots
-        for value in self.proposal_queue.drain(..) {
+        for value in self.proposer.take_proposals() {
             let mut slot = self.window.next_slot();
             slot.acceptor().notice_value(bal, value.clone());
         }
@@ -104,13 +99,12 @@ impl<S: Sender> Replica<S> {
 
     /// Forwards pending proposals to the new leader
     fn forward(&mut self) {
-        if !self.proposer.state().is_follower() || self.proposal_queue.is_empty() {
+        if !self.proposer.state().is_follower() || self.proposer.is_proposal_queue_empty() {
             return;
         }
 
+        let proposals = self.proposer.take_proposals();
         if let Some(Ballot(_, node)) = self.proposer.highest_observed_ballot() {
-            let mut proposals = Vec::new();
-            mem::swap(&mut self.proposal_queue, &mut proposals);
             self.sender.send_to(node, move |c| {
                 for proposal in proposals.into_iter() {
                     c.proposal(proposal);
@@ -147,7 +141,7 @@ impl<S: Sender> Commander for Replica<S> {
         match *self.proposer.state() {
             ProposerState::Follower if self.proposer.highest_observed_ballot().is_none() => {
                 // no known proposers, go through prepare cycle
-                self.proposal_queue.push(val);
+                self.proposer.push_proposal(val);
                 self.propose_leadership();
             }
             ProposerState::Follower => {
@@ -158,7 +152,7 @@ impl<S: Sender> Commander for Replica<S> {
             ProposerState::Candidate { .. } => {
                 // still waiting for promises, queue up the value
                 // TODO: should this re-send some PREPARE messages?
-                self.proposal_queue.push(val);
+                self.proposer.push_proposal(val);
             }
             ProposerState::Leader { proposal: bal } => {
                 // node is the distinguished proposer

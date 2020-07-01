@@ -1,5 +1,6 @@
 use crate::{config::QuorumSet, Ballot, NodeId};
-use std::cmp::max;
+use bytes::Bytes;
+use std::{cmp::max, mem};
 
 /// The proposer is a role within paxos that acts as a coordinator for the
 /// instance in that it attempts to elect itself the proposer (leader) for the
@@ -16,13 +17,23 @@ pub struct Proposer {
     current: NodeId,
     /// Number of nodes for quorum
     quorum: usize,
+
+    // TODO: bound the proposal queue
+    /// Queue of proposals while elections are happening
+    proposal_queue: Vec<Bytes>,
 }
 
 impl Proposer {
     /// Creates new proposer state with the node identifier and the Phase 1
     /// quorum size
     pub fn new(node: NodeId, quorum: usize) -> Proposer {
-        Proposer { state: ProposerState::Follower, highest: None, current: node, quorum }
+        Proposer {
+            state: ProposerState::Follower,
+            highest: None,
+            current: node,
+            quorum,
+            proposal_queue: Vec::new(),
+        }
     }
 
     /// Returns the proposer's state as either `Follower`, `Candidate` or
@@ -120,6 +131,21 @@ impl Proposer {
         // proposer has quorum from acceptors, upgrade to Leader and start
         // Phase 2 if we already have a value
         self.state = ProposerState::Leader { proposal: proposed };
+    }
+
+    /// Adds a proposal to the queue
+    pub fn push_proposal(&mut self, val: Bytes) {
+        self.proposal_queue.push(val);
+    }
+
+    /// Drains the proposal queue
+    pub fn take_proposals(&mut self) -> Vec<Bytes> {
+        mem::replace(&mut self.proposal_queue, Vec::new())
+    }
+
+    /// Indicator of empty proposal queue
+    pub fn is_proposal_queue_empty(&self) -> bool {
+        self.proposal_queue.is_empty()
     }
 }
 
