@@ -1,8 +1,7 @@
-use crate::kvstore::KeyValueStore;
 use bincode::{deserialize, serialize};
 use bytes::Bytes;
 use hyper::{client::HttpConnector, Body, Client, Request};
-use paxos::{Ballot, Commander, Configuration, NodeId, Sender, Slot};
+use paxos::{Ballot, Commander, NodeId, NodeMetadata, Slot, Transport};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str};
 
@@ -25,25 +24,33 @@ struct SlotValueTuple(Slot, #[serde(with = "BallotDef")] Ballot, Bytes);
 #[serde(remote = "Ballot")]
 struct BallotDef(pub u32, pub u32);
 
-pub struct PaxosSender {
+pub struct HttpTransport {
     peers: HashMap<NodeId, PaxosCommander>,
-    state_machine: KeyValueStore,
+    client: Client<HttpConnector, Body>,
 }
 
-impl PaxosSender {
-    pub fn new(config: &Configuration) -> PaxosSender {
-        let client = Client::new();
-        let peers = config
-            .peers()
-            .into_iter()
-            .map(|(node_id, addr)| {
-                (
-                    node_id,
-                    PaxosCommander(client.clone(), String::from_utf8(addr.0.to_vec()).unwrap()),
-                )
-            })
-            .collect::<HashMap<NodeId, PaxosCommander>>();
-        PaxosSender { peers, state_machine: KeyValueStore::default() }
+impl Default for HttpTransport {
+    fn default() -> HttpTransport {
+        HttpTransport { client: Client::new(), peers: HashMap::new() }
+    }
+}
+
+impl Transport for HttpTransport {
+    type Commander = PaxosCommander;
+
+    fn send_to<F>(&mut self, node: NodeId, meta: &NodeMetadata, command: F)
+    where
+        F: FnOnce(&mut Self::Commander) -> (),
+    {
+        if !self.peers.contains_key(&node) {
+            self.peers.insert(
+                node,
+                PaxosCommander(self.client.clone(), String::from_utf8(meta.0.to_vec()).unwrap()),
+            );
+        }
+
+        let commander = self.peers.get_mut(&node).unwrap();
+        command(commander);
     }
 }
 
@@ -67,25 +74,6 @@ pub fn invoke<C: Commander>(replica: &mut C, command: Bytes) {
         Command::Resolution(bal, vals) => replica.resolution(bal, vals),
         Command::Catchup(node, slots) => replica.catchup(node, slots),
     };
-}
-
-impl Sender for PaxosSender {
-    type Commander = PaxosCommander;
-    type StateMachine = KeyValueStore;
-
-    fn send_to<F>(&mut self, node: NodeId, command: F)
-    where
-        F: FnOnce(&mut Self::Commander) -> (),
-    {
-        if let Some(commander) = self.peers.get_mut(&node) {
-            command(commander);
-        }
-    }
-
-    /// Resolves the state machine to apply values.
-    fn state_machine(&mut self) -> &mut Self::StateMachine {
-        &mut self.state_machine
-    }
 }
 
 pub struct PaxosCommander(Client<HttpConnector, Body>, String);

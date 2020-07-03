@@ -1,29 +1,25 @@
-use crate::{commands::Commander, Ballot, LeaderElection, NodeId, Slot, Tick};
+use crate::{commands::Commander, window::DecisionSet, Ballot, NodeId, Replica, Slot};
 use bytes::Bytes;
 use std::time::{Duration, Instant};
 
 /// Adds liveness to a commander by taking leadership
 /// when a timeout occurs
-pub struct Liveness<R: Commander + LeaderElection> {
+pub struct Liveness<R: Replica> {
     inner: R,
     leader_election: Timeout,
 }
 
-impl<R: Commander + LeaderElection> Liveness<R> {
-    pub fn new(inner: R) -> Liveness<R> {
+impl<R: Replica> Liveness<R> {
+    pub(crate) fn new(inner: R) -> Liveness<R> {
         Liveness {
             inner,
             // TODO: configurable leadership election timeout
             leader_election: Timeout::new(Duration::from_secs(2)),
         }
     }
-
-    pub fn inner_mut(&mut self) -> &mut R {
-        &mut self.inner
-    }
 }
 
-impl<R: Commander + LeaderElection> Commander for Liveness<R> {
+impl<R: Replica> Commander for Liveness<R> {
     fn proposal(&mut self, val: Bytes) {
         self.inner.proposal(val);
     }
@@ -63,7 +59,7 @@ impl<R: Commander + LeaderElection> Commander for Liveness<R> {
     }
 }
 
-impl<R: Commander + LeaderElection> Tick for Liveness<R> {
+impl<R: Replica> Replica for Liveness<R> {
     fn tick(&mut self) {
         let lapsed = if self.inner.is_leader() {
             self.leader_election.near()
@@ -76,16 +72,20 @@ impl<R: Commander + LeaderElection> Tick for Liveness<R> {
             self.inner.propose_leadership();
             self.leader_election.clear();
         }
-    }
-}
 
-impl<R: Commander + LeaderElection> LeaderElection for Liveness<R> {
+        self.inner.tick();
+    }
+
     fn propose_leadership(&mut self) {
         self.inner.propose_leadership();
     }
 
     fn is_leader(&self) -> bool {
         self.inner.is_leader()
+    }
+
+    fn decisions(&self) -> DecisionSet {
+        self.inner.decisions()
     }
 }
 
@@ -235,13 +235,18 @@ mod tests {
         }
     }
 
-    impl LeaderElection for Inner {
+    impl Replica for Inner {
         fn propose_leadership(&mut self) {
             self.proposed_leadership = true;
         }
 
         fn is_leader(&self) -> bool {
             self.leader
+        }
+
+        fn tick(&mut self) {}
+        fn decisions(&self) -> DecisionSet {
+            unimplemented!();
         }
     }
 }

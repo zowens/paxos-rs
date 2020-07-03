@@ -33,19 +33,20 @@ extern crate test;
 mod acceptor;
 mod commands;
 mod config;
-mod liveness;
+pub mod liveness;
+mod node;
 mod proposer;
-mod replica;
-mod statemachine;
+pub mod statemachine;
 mod window;
 
 use std::cmp;
 
-pub use commands::{Commander, Sender};
+pub use commands::{Commander, Transport};
 pub use config::{Configuration, NodeMetadata};
-pub use liveness::Liveness;
-pub use replica::Replica;
+pub use node::Node;
 pub use statemachine::ReplicatedState;
+use std::marker::Sized;
+pub use window::DecisionSet;
 
 /// Increasing sequence number of Paxos instances.
 pub type Slot = u64;
@@ -86,19 +87,38 @@ impl Ord for Ballot {
     }
 }
 
-/// Logic implementing distinguished proposer and learner status.
-pub trait LeaderElection {
+pub trait Replica: Commander {
     /// Proposes that the current node take over leadership
     fn propose_leadership(&mut self);
 
     /// Determines if the current node is the leader
     fn is_leader(&self) -> bool;
-}
 
-/// Receiver of periodic ticks to drive further processing
-pub trait Tick {
+    /// Resolved slots within the replica
+    fn decisions(&self) -> DecisionSet;
+
     /// Runs logic for a tick of an interval
     fn tick(&mut self);
+
+    /// Configures the replica to re-establish leadership upon
+    /// failure.
+    fn liveness(self) -> liveness::Liveness<Self>
+    where
+        Self: Sized,
+    {
+        liveness::Liveness::new(self)
+    }
+
+    /// Configures the replica to use a custom state machine to apply decisions
+    fn state_machine<R: ReplicatedState>(
+        self,
+        state_machine: R,
+    ) -> statemachine::StateMachineReplica<Self, R>
+    where
+        Self: Sized,
+    {
+        statemachine::StateMachineReplica::new(self, state_machine)
+    }
 }
 
 #[cfg(test)]

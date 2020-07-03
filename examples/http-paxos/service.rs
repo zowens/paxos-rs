@@ -1,47 +1,55 @@
-use crate::{commands, kvstore::KvCommand};
+use crate::{
+    commands,
+    commands::HttpTransport,
+    kvstore::{KeyValueStore, KvCommand},
+};
 use bytes::Bytes;
+use futures_util::future::{join, Join};
 use hyper::{Body, Method, Request, Response, StatusCode};
-use paxos::{Commander, Sender, Tick};
+use paxos::{
+    liveness::Liveness, statemachine::StateMachineReplica, Commander, Configuration, Node, Replica,
+};
 use rand::random;
 use std::{sync::Arc, time::Duration};
 use tokio::{self, sync::Mutex, task::JoinHandle, time::interval};
 
+type PaxosReplica = StateMachineReplica<Liveness<Node<HttpTransport>>, KeyValueStore>;
+pub type TimerHandles = Join<JoinHandle<()>, JoinHandle<()>>;
+
 #[derive(Clone)]
 pub struct Handler {
-    replica: Arc<Mutex<paxos::Liveness<paxos::Replica<commands::PaxosSender>>>>,
+    replica: Arc<Mutex<PaxosReplica>>,
+    store: KeyValueStore,
 }
 
 impl Handler {
-    pub fn new(replica: paxos::Liveness<paxos::Replica<commands::PaxosSender>>) -> Handler {
-        Handler { replica: Arc::new(Mutex::new(replica)) }
+    pub fn new(config: Configuration) -> Handler {
+        let store = KeyValueStore::default();
+        let replica =
+            Node::new(HttpTransport::default(), config).liveness().state_machine(store.clone());
+        Handler { replica: Arc::new(Mutex::new(replica)), store }
     }
 
-    /// start a cleanup loop to handle closed clients
-    pub fn spawn_cleanup_loop(&self) -> JoinHandle<()> {
-        let replica_arch_timer = self.replica.clone();
-        tokio::spawn(async move {
+    pub fn spawn_timers(&self) -> TimerHandles {
+        let store = self.store.clone();
+        let listener_cleanup = tokio::spawn(async move {
             let mut ticks = interval(Duration::new(30, 0));
             loop {
                 ticks.tick().await;
-
-                let mut replica = replica_arch_timer.lock().await;
-                replica.inner_mut().sender_mut().state_machine().prune_listeners();
+                store.prune_listeners();
             }
-        })
-    }
+        });
 
-    /// start a loop for liveness functionality
-    pub fn spawn_tick_loop(&self) -> JoinHandle<()> {
         let replica_arch_timer = self.replica.clone();
-        tokio::spawn(async move {
+        let liveness_tick = tokio::spawn(async move {
             let mut ticks = interval(Duration::from_millis(100));
             loop {
                 ticks.tick().await;
-
-                let mut replica = replica_arch_timer.lock().await;
-                replica.tick();
+                replica_arch_timer.lock().await.tick();
             }
-        })
+        });
+
+        join(listener_cleanup, liveness_tick)
     }
 
     pub async fn handle(&self, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
@@ -51,21 +59,21 @@ impl Handler {
                 {
                     let cmd = hyper::body::to_bytes(req.into_body()).await?;
                     let mut replica = self.replica.lock().await;
-                    commands::invoke(&mut replica as &mut paxos::Liveness<_>, cmd);
+                    commands::invoke::<PaxosReplica>(&mut replica, cmd);
                 }
 
                 respond(StatusCode::ACCEPTED)
             }
             (&Method::POST, key) => {
                 let value = hyper::body::to_bytes(req.into_body()).await?;
-                let id = random::<u64>();
-                let receiver = {
-                    let mut replica = self.replica.lock().await;
-                    let receiver =
-                        replica.inner_mut().sender_mut().state_machine().register_set(id);
-                    replica.proposal(KvCommand::Set { request_id: id, key, value }.into());
-                    receiver
-                };
+                let request_id = random();
+                let receiver = self.store.register_set(request_id);
+                {
+                    self.replica
+                        .lock()
+                        .await
+                        .proposal(KvCommand::Set { request_id, key, value }.into());
+                }
 
                 match receiver.await {
                     Ok(slot) => Ok(Response::builder()
@@ -77,14 +85,11 @@ impl Handler {
                 }
             }
             (&Method::GET, key) => {
-                let id = random::<u64>();
-                let receiver = {
-                    let mut replica = self.replica.lock().await;
-                    let receiver =
-                        replica.inner_mut().sender_mut().state_machine().register_get(id);
-                    replica.proposal(KvCommand::Get { request_id: id, key }.into());
-                    receiver
-                };
+                let request_id = random::<u64>();
+                let receiver = self.store.register_get(request_id);
+                {
+                    self.replica.lock().await.proposal(KvCommand::Get { request_id, key }.into());
+                }
 
                 match receiver.await {
                     Ok(Some((slot, value))) => Ok(Response::builder()

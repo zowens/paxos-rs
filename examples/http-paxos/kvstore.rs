@@ -2,7 +2,11 @@ use bincode;
 use bytes::Bytes;
 use paxos::{ReplicatedState, Slot};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, convert::TryFrom};
+use std::{
+    collections::HashMap,
+    convert::TryFrom,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::oneshot::{channel, Receiver, Sender};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,29 +32,52 @@ impl TryFrom<Bytes> for KvCommand {
     }
 }
 
-#[derive(Default)]
-pub struct KeyValueStore {
+struct Inner {
     values: HashMap<Bytes, Bytes>,
     pending_set: HashMap<u64, Sender<Slot>>,
     pending_get: HashMap<u64, Sender<Option<(Slot, Bytes)>>>,
 }
 
+#[derive(Clone)]
+pub struct KeyValueStore {
+    inner: Arc<Mutex<Inner>>,
+}
+
+impl Default for KeyValueStore {
+    fn default() -> KeyValueStore {
+        KeyValueStore {
+            inner: Arc::new(Mutex::new(Inner {
+                values: HashMap::default(),
+                pending_set: HashMap::default(),
+                pending_get: HashMap::default(),
+            })),
+        }
+    }
+}
+
 impl KeyValueStore {
-    pub fn register_get(&mut self, id: u64) -> Receiver<Option<(Slot, Bytes)>> {
+    pub fn register_get(&self, id: u64) -> Receiver<Option<(Slot, Bytes)>> {
         let (snd, recv) = channel();
-        self.pending_get.insert(id, snd);
+        {
+            let mut inner = self.inner.lock().unwrap();
+            &inner.pending_get.insert(id, snd);
+        }
         recv
     }
 
-    pub fn register_set(&mut self, id: u64) -> Receiver<Slot> {
+    pub fn register_set(&self, id: u64) -> Receiver<Slot> {
         let (snd, recv) = channel();
-        self.pending_set.insert(id, snd);
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.pending_set.insert(id, snd);
+        }
         recv
     }
 
-    pub fn prune_listeners(&mut self) {
-        self.pending_get.retain(|_, val| !val.is_closed());
-        self.pending_set.retain(|_, val| !val.is_closed());
+    pub fn prune_listeners(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.pending_get.retain(|_, val| !val.is_closed());
+        inner.pending_set.retain(|_, val| !val.is_closed());
     }
 }
 
@@ -58,18 +85,20 @@ impl ReplicatedState for KeyValueStore {
     fn execute(&mut self, slot: Slot, cmd: Bytes) {
         match KvCommand::try_from(cmd) {
             Ok(KvCommand::Get { request_id, key }) => {
-                let sender = match self.pending_get.remove(&request_id) {
+                let mut inner = self.inner.lock().unwrap();
+                let sender = match inner.pending_get.remove(&request_id) {
                     Some(sender) => sender,
                     None => return,
                 };
-                match self.values.get(&key).cloned() {
+                match inner.values.get(&key).cloned() {
                     Some(val) => sender.send(Some((slot, val))).unwrap_or(()),
                     None => sender.send(None).unwrap_or(()),
                 }
             }
             Ok(KvCommand::Set { request_id, key, value }) => {
-                self.values.insert(key, value);
-                if let Some(sender) = self.pending_set.remove(&request_id) {
+                let mut inner = self.inner.lock().unwrap();
+                inner.values.insert(key, value);
+                if let Some(sender) = inner.pending_set.remove(&request_id) {
                     sender.send(slot).unwrap_or(());
                 }
             }

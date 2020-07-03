@@ -1,6 +1,6 @@
 use crate::NodeId;
 use bytes::Bytes;
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, ops::Index};
 
 #[derive(Default, Clone, Debug, Eq, PartialEq)]
 /// Opaque, applicaiton specific metadata for nodes in the system
@@ -58,6 +58,13 @@ impl Configuration {
     }
 }
 
+impl Index<NodeId> for Configuration {
+    type Output = NodeMetadata;
+    fn index(&self, node: NodeId) -> &NodeMetadata {
+        &self.peers[&node]
+    }
+}
+
 impl fmt::Debug for Configuration {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let (p1_q, p2_q) = self.quorum_size();
@@ -109,13 +116,15 @@ impl QuorumSet {
 
     #[inline]
     fn search(&self, n: NodeId) -> Result<usize, usize> {
-        self.values.iter().enumerate().find_map(|(i, elem)| {
-            match elem {
+        self.values
+            .iter()
+            .enumerate()
+            .find_map(|(i, elem)| match elem {
                 Some(nd) if *nd == n => Some(Ok(i)),
                 None => Some(Err(i)),
                 _ => None,
-            }
-        }).unwrap_or_else(|| Err(self.values.len()-1))
+            })
+            .unwrap_or_else(|| Err(self.values.len() - 1))
     }
 
     /// Inserts a node into the set
