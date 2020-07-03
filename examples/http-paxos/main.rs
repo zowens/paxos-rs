@@ -6,6 +6,7 @@ extern crate rand;
 extern crate serde;
 #[macro_use]
 extern crate log;
+extern crate futures_util;
 extern crate hyper;
 #[cfg(not(test))]
 extern crate tokio;
@@ -18,7 +19,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Server,
 };
-use paxos::{Configuration, Liveness, NodeId, NodeMetadata, Replica};
+use paxos::{Configuration, NodeId, NodeMetadata};
 use std::{env::args, net::SocketAddr, process::exit};
 
 fn config() -> paxos::Configuration {
@@ -57,10 +58,8 @@ async fn main() {
 
     let conf = config();
     let addr: SocketAddr = format!("127.0.0.1:808{}", conf.current()).parse().unwrap();
-    let sender = commands::PaxosSender::new(&conf);
-    let handler = service::Handler::new(Liveness::new(Replica::new(sender, conf)));
-    let cleanup = handler.spawn_cleanup_loop();
-    let tick = handler.spawn_tick_loop();
+    let handler = service::Handler::new(conf);
+    let timers = handler.spawn_timers();
 
     let service = make_service_fn(move |_| {
         let handler = handler.clone();
@@ -74,8 +73,7 @@ async fn main() {
 
     let server = Server::bind(&addr).serve(service);
     if let Err(e) = server.await {
-        drop(tick);
-        drop(cleanup);
+        drop(timers);
         eprintln!("server error: {}", e);
     }
 }

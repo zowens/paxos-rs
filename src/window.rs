@@ -1,7 +1,11 @@
 use super::Slot;
 use crate::{acceptor::Acceptor, Ballot};
 use bytes::Bytes;
-use std::{cmp::max, ops::Range};
+use std::{
+    cmp::{max, min},
+    iter::ExactSizeIterator,
+    ops::{Bound, Range, RangeBounds},
+};
 
 struct ResolvedSlot(Ballot, Bytes);
 
@@ -17,7 +21,6 @@ pub struct SlotWindow {
 
     /// Slots that have been decided.
     decided: Vec<ResolvedSlot>,
-    execute_start: usize,
 
     /// Size of the phase 2 quorum
     quorum: usize,
@@ -30,14 +33,7 @@ impl SlotWindow {
         // add the first slot
         open.push(Acceptor::new(None, quorum));
 
-        SlotWindow {
-            open,
-            open_min_slot: 0,
-            max_promised: None,
-            decided: Vec::new(),
-            quorum,
-            execute_start: 0,
-        }
+        SlotWindow { open, open_min_slot: 0, max_promised: None, decided: Vec::new(), quorum }
     }
 
     /// Mutable reference to a slot
@@ -92,9 +88,9 @@ impl SlotWindow {
         Range { start: self.open_min_slot, end: self.open_min_slot + self.open.len() as Slot }
     }
 
-    /// Removes decisions for application in the state machine
-    pub fn drain_decisions<'a>(&'a mut self) -> impl Iterator<Item = (Slot, Bytes)> + 'a {
-        DecisionIter(self)
+    /// Iterator for resolved slots and the decided value
+    pub fn decisions(&self) -> DecisionSet {
+        DecisionSet { window: self }
     }
 
     fn fill_decisions(&mut self) {
@@ -185,21 +181,70 @@ impl<'a> EmptySlotRef<'a> {
     }
 }
 
-/// Iterator over the window's decisions
-struct DecisionIter<'a>(&'a mut SlotWindow);
+/// Set of slot decisions that are replicated and stable.
+pub struct DecisionSet<'a> {
+    window: &'a SlotWindow,
+}
 
-impl<'a> Iterator for DecisionIter<'a> {
+impl<'a> DecisionSet<'a> {
+    pub fn iter(&self) -> DecisionIterator {
+        DecisionIterator { window: &self.window, i: 0, end: self.window.decided.len() }
+    }
+
+    pub fn range<R>(&self, range: R) -> DecisionIterator
+    where
+        R: RangeBounds<Slot>,
+    {
+        let start = match range.start_bound() {
+            Bound::Excluded(slot) => (*slot + 1) as usize,
+            Bound::Included(slot) => *slot as usize,
+            Bound::Unbounded => 0,
+        };
+
+        let len = self.window.decided.len();
+        let end = match range.end_bound() {
+            Bound::Excluded(slot) => min(*slot as usize, len),
+            Bound::Included(slot) => min((*slot as usize).saturating_sub(1), len),
+            Bound::Unbounded => len,
+        };
+
+        DecisionIterator { window: &self.window, i: start, end }
+    }
+
+    pub fn len(&self) -> usize {
+        self.window.decided.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.window.decided.is_empty()
+    }
+}
+
+/// Iterator over the window's decisions
+pub struct DecisionIterator<'a> {
+    window: &'a SlotWindow,
+    i: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for DecisionIterator<'a> {
     type Item = (Slot, Bytes);
 
     fn next(&mut self) -> Option<(Slot, Bytes)> {
-        if self.0.execute_start >= self.0.decided.len() {
+        if self.i >= self.end {
             return None;
         }
 
-        let slot = self.0.execute_start;
-        let val = self.0.decided[self.0.execute_start].1.clone();
-        self.0.execute_start = slot + 1;
+        let slot = self.i;
+        let val = self.window.decided[slot].1.clone();
+        self.i += 1;
         Some((slot as Slot, val))
+    }
+}
+
+impl<'a> ExactSizeIterator for DecisionIterator<'a> {
+    fn len(&self) -> usize {
+        self.end - self.i
     }
 }
 
@@ -325,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn drain() {
+    fn decisions() {
         let mut window = SlotWindow::new(2);
         {
             window.slot_mut(1).unwrap_empty().fill().acceptor().resolve(Ballot(0, 5), "1".into())
@@ -336,7 +381,7 @@ mod tests {
         }
 
         {
-            assert_eq!(0, window.drain_decisions().count());
+            assert_eq!(0, window.decisions().iter().count());
         }
 
         {
@@ -344,7 +389,7 @@ mod tests {
         }
 
         {
-            let decisions = window.drain_decisions().collect::<Vec<_>>();
+            let decisions = window.decisions().iter().collect::<Vec<_>>();
             assert_eq!(3, decisions.len());
             assert_eq!(vec![(0, "0".into()), (1, "1".into()), (2, "2".into())], decisions);
         }
@@ -357,7 +402,7 @@ mod tests {
         }
 
         {
-            assert_eq!(0, window.drain_decisions().count());
+            assert_eq!(0, window.decisions().range(3..).count());
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::{Ballot, NodeId, ReplicatedState, Slot};
+use crate::{Ballot, NodeId, NodeMetadata, Slot};
 use bytes::Bytes;
 
 #[cfg(test)]
@@ -6,20 +6,14 @@ use std::iter::Extend;
 
 /// Sends commands to other replicas in addition to applying
 /// resolved commands at the current replica
-pub trait Sender {
+pub trait Transport {
     /// Commander type used to send messages to other instances
     type Commander: Commander;
 
-    /// The state machine used by this replica
-    type StateMachine: ReplicatedState;
-
     /// Send a message to a single node
-    fn send_to<F>(&mut self, node: NodeId, command: F)
+    fn send_to<F>(&mut self, node: NodeId, node_metadata: &NodeMetadata, command: F)
     where
         F: FnOnce(&mut Self::Commander) -> ();
-
-    /// Resolves the state machine to apply values.
-    fn state_machine(&mut self) -> &mut Self::StateMachine;
 }
 
 /// Receiver of Paxos commands.
