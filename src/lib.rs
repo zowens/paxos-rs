@@ -1,4 +1,3 @@
-#![feature(test)]
 #![allow(unknown_lints)]
 //! Rust implementation of the Paxos algorithm for replicated state machines.
 //!
@@ -27,8 +26,6 @@ extern crate bytes;
 extern crate log;
 #[cfg(test)]
 extern crate lazy_static;
-#[cfg(test)]
-extern crate test;
 
 mod acceptor;
 mod commands;

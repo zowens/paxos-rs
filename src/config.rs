@@ -208,19 +208,4 @@ mod tests {
         assert!(!qs.is_empty());
         assert!(qs.has_quorum());
     }
-
-    #[bench]
-    fn bench_quorum_set(b: &mut test::Bencher) {
-        b.iter(|| {
-            let mut qs = QuorumSet::with_size(5);
-            qs.insert(5);
-            qs.has_quorum();
-            qs.insert(2);
-            qs.has_quorum();
-            qs.insert(8);
-            qs.has_quorum();
-            qs.insert(8);
-            qs.has_quorum();
-        })
-    }
 }
