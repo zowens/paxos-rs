@@ -4,7 +4,9 @@
 
 Library encapsulating Multi-Decree Paxos and variants in Rust. The core algorithm is embeddable in other systems that need a replicated state machine.
 
-*Development Status*: Experimental (not for production use yet)
+*Development Status*: Alpha (not for production use yet)
+
+The library is getting close to a [0.1 release](https://github.com/zowens/paxos-rs/milestone/1).
 
 ## Example Key-Value Store
 
@@ -43,34 +45,10 @@ date: Tue, 09 Jun 2020 19:56:41 GMT
 hello paxos
 ```
 
-## Roadmap
-- [X] Paxos Algorithm
-    - [X] Core algorithm
-    - [X] Distinguished Proposer
-    - [X] Distinguished Learner
-    - [ ] Flexible Quorums
-    - [X] Pipelining
-    - [ ] Persistent Storage
-    - [ ] Learner/observers
-    - [ ] Read leases
-    - [ ] Reconfiguration
-- [ ] Optional Features
-    - [ ] `serde` for serialize/deserialize message types
-    - [ ] `futures`
-- [ ] Generalized Replicated State Machine
-    - [ ] Mutable Register
-    - [ ] Asynchronous State Machine
-    - [ ] Durable Log
-- [ ] Variants
-    - [ ] EPaxos
-    - [ ] Mencius
-    - [ ] WPaxos
-    - [ ] SDPaxos
-    - [ ] Pig Paxos
-
 ## References
 * [Paxos Variants](http://paxos.systems/variants.html#mencius)
 * [Understanding Paxos](https://understandingpaxos.wordpress.com/)
 * [Paxos Made Moderately Complex](http://paxos.systems/)
 * [Flexible Quorums](https://fpaxos.github.io/)
 * [WPaxos](https://muratbuffalo.blogspot.com/2017/12/wpaxos-wide-area-network-paxos-protocol.html)
+* [PigPaxos](https://arxiv.org/pdf/2003.07760.pdf)
