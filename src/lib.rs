@@ -23,6 +23,7 @@
 //! # }
 //! ```
 extern crate bytes;
+extern crate serde;
 #[macro_use]
 extern crate log;
 #[cfg(test)]
@@ -31,7 +32,7 @@ extern crate lazy_static;
 extern crate test;
 
 mod acceptor;
-mod commands;
+pub mod commands;
 mod config;
 pub mod liveness;
 mod node;
@@ -41,9 +42,10 @@ mod window;
 
 use std::cmp;
 
-pub use commands::{Commander, Transport};
+pub use commands::{Command, Receiver, Transport};
 pub use config::{Configuration, NodeMetadata};
 pub use node::Node;
+use serde::{Deserialize, Serialize};
 pub use statemachine::ReplicatedState;
 use std::marker::Sized;
 pub use window::DecisionSet;
@@ -58,7 +60,7 @@ pub type NodeId = u32;
 /// Ballot numbering is an increasing number in order to order proposals
 /// across multiple nodes. Ballots are unique in that ballot numbers between
 /// nodes are unique and it is algorithmically increasing per node.
-#[derive(PartialEq, Hash, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Hash, Eq, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Ballot(pub u32, pub NodeId);
 
 impl Ballot {
@@ -87,7 +89,7 @@ impl Ord for Ballot {
     }
 }
 
-pub trait Replica: Commander {
+pub trait Replica: Receiver {
     /// Proposes that the current node take over leadership
     fn propose_leadership(&mut self);
 

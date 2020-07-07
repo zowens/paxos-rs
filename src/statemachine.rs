@@ -1,4 +1,7 @@
-use crate::{Ballot, Commander, DecisionSet, NodeId, Replica, Slot};
+use crate::{
+    commands::{Command, Receiver},
+    DecisionSet, Replica, Slot,
+};
 use bytes::Bytes;
 
 /// A state machine that executes sequentially applied commands.
@@ -36,39 +39,10 @@ impl<R: Replica, S: ReplicatedState> StateMachineReplica<R, S> {
     }
 }
 
-impl<R: Replica, S: ReplicatedState> Commander for StateMachineReplica<R, S> {
-    fn proposal(&mut self, val: Bytes) {
-        self.inner.proposal(val);
-    }
-
-    fn prepare(&mut self, bal: Ballot) {
-        self.inner.prepare(bal);
-    }
-
-    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<(Slot, Ballot, Bytes)>) {
-        self.inner.promise(node, bal, accepted);
-    }
-
-    fn accept(&mut self, bal: Ballot, slot_values: Vec<(Slot, Bytes)>) {
-        self.inner.accept(bal, slot_values);
-    }
-
-    fn reject(&mut self, node: NodeId, proposed: Ballot, preempted: Ballot) {
-        self.inner.reject(node, proposed, preempted);
-    }
-
-    fn accepted(&mut self, node: NodeId, bal: Ballot, slots: Vec<Slot>) {
-        self.inner.accepted(node, bal, slots);
+impl<R: Replica, S: ReplicatedState> Receiver for StateMachineReplica<R, S> {
+    fn receive(&mut self, cmd: Command) {
+        self.inner.receive(cmd);
         self.try_execute_slots();
-    }
-
-    fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>) {
-        self.inner.resolution(bal, values);
-        self.try_execute_slots();
-    }
-
-    fn catchup(&mut self, node: NodeId, slots: Vec<Slot>) {
-        self.inner.catchup(node, slots);
     }
 }
 
@@ -94,8 +68,9 @@ impl<R: Replica, S: ReplicatedState> Replica for StateMachineReplica<R, S> {
 mod tests {
     use super::*;
     use crate::{
-        commands::{Command, Commander},
+        commands::{Command, Receiver},
         window::{DecisionSet, SlotWindow},
+        Ballot, Slot,
     };
 
     #[test]
@@ -118,12 +93,12 @@ mod tests {
         }
 
         let mut replica = StateMachineReplica::new(inner_replica, VecStateMachine::default());
-        replica.resolution(Ballot(2, 2), vec![]);
+        replica.receive(Command::Resolution(Ballot(2, 2), vec![]));
         assert_eq!(vec![(0u64, Bytes::from("0")), (1, Bytes::from("1"))], replica.state_machine.0);
         replica.state_machine.0.clear();
 
         // does not happen again
-        replica.resolution(Ballot(2, 2), vec![]);
+        replica.receive(Command::Resolution(Ballot(2, 2), vec![]));
         assert!(replica.state_machine.0.is_empty());
 
         // fill hole in slot 2, freeing 3
@@ -137,7 +112,7 @@ mod tests {
                 .resolve(Ballot(1, 1), Bytes::default());
         }
 
-        replica.resolution(Ballot(2, 2), vec![]);
+        replica.receive(Command::Resolution(Ballot(2, 2), vec![]));
         assert_eq!(vec![(3u64, Bytes::from("2"))], replica.state_machine.0);
     }
 
@@ -161,12 +136,12 @@ mod tests {
         }
 
         let mut replica = StateMachineReplica::new(inner_replica, VecStateMachine::default());
-        replica.accepted(0, Ballot(2, 2), vec![]);
+        replica.receive(Command::Accepted(0, Ballot(2, 2), vec![]));
         assert_eq!(vec![(0u64, Bytes::from("0")), (1, Bytes::from("1"))], replica.state_machine.0);
         replica.state_machine.0.clear();
 
         // does not happen again
-        replica.accepted(1, Ballot(2, 2), vec![]);
+        replica.receive(Command::Accepted(1, Ballot(2, 2), vec![]));
         assert!(replica.state_machine.0.is_empty());
 
         // fill hole in slot 2, freeing 3
@@ -180,7 +155,7 @@ mod tests {
                 .resolve(Ballot(1, 1), Bytes::default());
         }
 
-        replica.accepted(2, Ballot(2, 2), vec![]);
+        replica.receive(Command::Accepted(2, Ballot(2, 2), vec![]));
         assert_eq!(vec![(3u64, Bytes::from("2"))], replica.state_machine.0);
     }
 
@@ -193,12 +168,8 @@ mod tests {
     }
 
     struct FakeReplica(SlotWindow);
-    impl Extend<Command> for FakeReplica {
-        fn extend<T>(&mut self, _iter: T)
-        where
-            T: IntoIterator<Item = Command>,
-        {
-        }
+    impl Receiver for FakeReplica {
+        fn receive(&mut self, _cmd: Command) {}
     }
 
     impl Replica for FakeReplica {

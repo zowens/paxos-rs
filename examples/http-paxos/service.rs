@@ -7,7 +7,8 @@ use bytes::Bytes;
 use futures_util::future::{join, Join};
 use hyper::{Body, Method, Request, Response, StatusCode};
 use paxos::{
-    liveness::Liveness, statemachine::StateMachineReplica, Commander, Configuration, Node, Replica,
+    liveness::Liveness, statemachine::StateMachineReplica, Command, Configuration, Node, Receiver,
+    Replica,
 };
 use rand::random;
 use std::{sync::Arc, time::Duration};
@@ -69,10 +70,9 @@ impl Handler {
                 let request_id = random();
                 let receiver = self.store.register_set(request_id);
                 {
-                    self.replica
-                        .lock()
-                        .await
-                        .proposal(KvCommand::Set { request_id, key, value }.into());
+                    self.replica.lock().await.receive(Command::Proposal(
+                        KvCommand::Set { request_id, key, value }.into(),
+                    ));
                 }
 
                 match receiver.await {
@@ -88,7 +88,10 @@ impl Handler {
                 let request_id = random::<u64>();
                 let receiver = self.store.register_get(request_id);
                 {
-                    self.replica.lock().await.proposal(KvCommand::Get { request_id, key }.into());
+                    self.replica
+                        .lock()
+                        .await
+                        .receive(Command::Proposal(KvCommand::Get { request_id, key }.into()));
                 }
 
                 match receiver.await {

@@ -73,7 +73,7 @@ impl<T: Transport> Node<T> {
 
         // send out the accepts
         if !accepts.is_empty() {
-            self.broadcast(|c| c.accept(bal, accepts.clone()));
+            self.broadcast(Command::Accept(bal, accepts));
         }
     }
 
@@ -85,28 +85,21 @@ impl<T: Transport> Node<T> {
 
         let proposals = self.proposer.take_proposals();
         if let Some(Ballot(_, node)) = self.proposer.highest_observed_ballot() {
-            self.send(node, move |c| {
-                for proposal in proposals.into_iter() {
-                    c.proposal(proposal);
-                }
-            });
+            for proposal in proposals.into_iter() {
+                self.send(node, Command::Proposal(proposal));
+            }
         }
     }
 
-    fn send<F>(&mut self, node: NodeId, f: F)
-    where
-        F: FnOnce(&mut T::Commander) -> (),
-    {
-        self.transport.send_to(node, &self.config[node], f);
+    #[inline(always)]
+    fn send(&mut self, node: NodeId, cmd: Command) {
+        self.transport.send(node, &self.config[node], cmd)
     }
 
-    fn broadcast<F>(&mut self, f: F)
-    where
-        F: Fn(&mut T::Commander) -> (),
-    {
-        // TODO: thrifty option
+    #[inline(always)]
+    fn broadcast(&mut self, cmd: Command) {
         for node in self.config.peer_node_ids().into_iter() {
-            self.transport.send_to(node, &self.config[node], &f);
+            self.transport.send(node, &self.config[node], cmd.clone());
         }
     }
 }
@@ -122,7 +115,7 @@ impl<T: Transport> Commander for Node<T> {
             }
             ProposerState::Follower => {
                 let leader_node = self.proposer.highest_observed_ballot().unwrap().1;
-                self.send(leader_node, |c| c.proposal(val));
+                self.send(leader_node, Command::Proposal(val));
             }
             ProposerState::Candidate { .. } => {
                 // still waiting for promises, queue up the value
@@ -136,7 +129,7 @@ impl<T: Transport> Commander for Node<T> {
                     slot_ref.acceptor().notice_value(bal, val.clone());
                     slot_ref.slot()
                 };
-                self.broadcast(|c| c.accept(bal, vec![(slot, val.clone())]))
+                self.broadcast(Command::Accept(bal, vec![(slot, val.clone())]));
             }
         }
     }
@@ -157,9 +150,11 @@ impl<T: Transport> Commander for Node<T> {
                         PrepareResponse::Reject { proposed, preempted } => {
                             // found a slot that accepted a higher ballot, send the reject
                             let node = bal.1;
-                            self.transport.send_to(node, &self.config[node], |c| {
-                                c.reject(node_id, proposed, preempted)
-                            });
+                            self.transport.send(
+                                node,
+                                &self.config[node],
+                                Command::Reject(node_id, proposed, preempted),
+                            );
                             return;
                         }
                         _ => {}
@@ -178,7 +173,7 @@ impl<T: Transport> Commander for Node<T> {
                 }
             }
         }
-        self.send(bal.1, move |c| c.promise(node_id, bal, accepted));
+        self.send(bal.1, Command::Promise(node_id, bal, accepted));
     }
 
     fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<(Slot, Ballot, Bytes)>) {
@@ -228,14 +223,14 @@ impl<T: Transport> Commander for Node<T> {
                     accepted_slots.push(slot);
                 }
                 AcceptResponse::Reject { proposed, preempted } => {
-                    self.send(bal.1, |c| c.reject(current_node, proposed, preempted));
+                    self.send(bal.1, Command::Reject(current_node, proposed, preempted));
                     return;
                 }
                 _ => {}
             }
         }
 
-        self.send(bal.1, |c| c.accepted(current_node, bal, accepted_slots));
+        self.send(bal.1, Command::Accepted(current_node, bal, accepted_slots));
     }
 
     fn reject(&mut self, node: NodeId, proposed: Ballot, promised: Ballot) {
@@ -268,7 +263,7 @@ impl<T: Transport> Commander for Node<T> {
 
         if !resolutions.is_empty() {
             resolutions.shrink_to_fit();
-            self.broadcast(|c| c.resolution(bal, resolutions.clone()));
+            self.broadcast(Command::Resolution(bal, resolutions));
         }
     }
 
@@ -300,7 +295,7 @@ impl<T: Transport> Commander for Node<T> {
             trace!("Sending catchup for slots {:?}", slots);
             let leader = self.proposer.highest_observed_ballot().unwrap().1;
             let node = self.config.current();
-            self.send(leader, |c| c.catchup(node, slots));
+            self.send(leader, Command::Catchup(node, slots));
         }
     }
 
@@ -322,8 +317,11 @@ impl<T: Transport> Commander for Node<T> {
                     if b != bal && !buf.is_empty() {
                         let next_buf_cap = buf.capacity().saturating_sub(buf.len());
                         let send_buf = mem::replace(&mut buf, Vec::with_capacity(next_buf_cap));
-                        self.transport
-                            .send_to(node, &self.config[node], move |c| c.resolution(b, send_buf));
+                        self.transport.send(
+                            node,
+                            &self.config[node],
+                            Command::Resolution(b, send_buf),
+                        );
                     }
                 }
 
@@ -333,7 +331,7 @@ impl<T: Transport> Commander for Node<T> {
         }
 
         if !buf.is_empty() && run_bal.is_some() {
-            self.send(node, move |c| c.resolution(run_bal.unwrap(), buf));
+            self.send(node, Command::Resolution(run_bal.unwrap(), buf));
         }
     }
 }
@@ -341,14 +339,14 @@ impl<T: Transport> Commander for Node<T> {
 impl<T: Transport> Replica for Node<T> {
     fn propose_leadership(&mut self) {
         match *self.proposer.state() {
-            ProposerState::Candidate { proposal, .. } => self.broadcast(|c| c.prepare(proposal)),
+            ProposerState::Candidate { proposal, .. } => self.broadcast(Command::Prepare(proposal)),
             ProposerState::Follower => {
                 let bal = self.proposer.prepare();
-                self.broadcast(|c| c.prepare(bal));
+                self.broadcast(Command::Prepare(bal));
             }
             ProposerState::Leader { proposal } => {
-                // TODO: do we want a special sync here?
-                self.broadcast(|c| c.accept(proposal, vec![]));
+                // TODO: do we want a special sync here? What about periodic bumping ballot?
+                self.broadcast(Command::Accept(proposal, vec![]));
             }
         }
     }
@@ -811,14 +809,9 @@ mod tests {
     }
 
     impl Transport for VecTransport {
-        type Commander = Vec<Command>;
-
-        fn send_to<F>(&mut self, node: NodeId, _: &NodeMetadata, f: F)
-        where
-            F: FnOnce(&mut Self::Commander) -> (),
-        {
+        fn send(&mut self, node: NodeId, _: &NodeMetadata, cmd: Command) {
             assert!(node < 4);
-            f(&mut self.0[node as usize]);
+            self.0[node as usize].push(cmd);
         }
     }
 }
