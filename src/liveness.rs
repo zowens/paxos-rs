@@ -1,5 +1,8 @@
-use crate::{commands::Commander, window::DecisionSet, Ballot, NodeId, Replica, Slot};
-use bytes::Bytes;
+use crate::{
+    commands::{Command, Receiver},
+    window::DecisionSet,
+    Replica,
+};
 use std::time::{Duration, Instant};
 
 /// Adds liveness to a commander by taking leadership
@@ -19,43 +22,15 @@ impl<R: Replica> Liveness<R> {
     }
 }
 
-impl<R: Replica> Commander for Liveness<R> {
-    fn proposal(&mut self, val: Bytes) {
-        self.inner.proposal(val);
-    }
+impl<R: Replica> Receiver for Liveness<R> {
+    fn receive(&mut self, cmd: Command) {
+        // Bump leadership timeout if the command is not a catchup or proposal
+        match &cmd {
+            &Command::Proposal(_) | &Command::Catchup(..) => {}
+            _ => self.leader_election.bump(),
+        }
 
-    fn prepare(&mut self, bal: Ballot) {
-        self.leader_election.bump();
-        self.inner.prepare(bal);
-    }
-
-    fn promise(&mut self, node: NodeId, bal: Ballot, accepted: Vec<(Slot, Ballot, Bytes)>) {
-        self.leader_election.bump();
-        self.inner.promise(node, bal, accepted);
-    }
-
-    fn accept(&mut self, bal: Ballot, slot_values: Vec<(Slot, Bytes)>) {
-        self.leader_election.bump();
-        self.inner.accept(bal, slot_values);
-    }
-
-    fn reject(&mut self, node: NodeId, proposed: Ballot, preempted: Ballot) {
-        self.leader_election.bump();
-        self.inner.reject(node, proposed, preempted);
-    }
-
-    fn accepted(&mut self, node: NodeId, bal: Ballot, slots: Vec<Slot>) {
-        self.leader_election.bump();
-        self.inner.accepted(node, bal, slots);
-    }
-
-    fn resolution(&mut self, bal: Ballot, values: Vec<(Slot, Bytes)>) {
-        self.leader_election.bump();
-        self.inner.resolution(bal, values);
-    }
-
-    fn catchup(&mut self, node: NodeId, slots: Vec<Slot>) {
-        self.inner.catchup(node, slots);
+        self.inner.receive(cmd);
     }
 }
 
@@ -134,12 +109,12 @@ impl Timeout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::Command;
+    use crate::{commands::Command, Ballot};
 
     #[test]
     fn propose_does_not_bump_timeout() {
         let mut live = Liveness::new(Inner::default());
-        live.proposal("123".into());
+        live.receive(Command::Proposal("123".into()));
 
         // does not bump leadership
         assert!(live.leader_election.latest_message.is_none());
@@ -149,32 +124,32 @@ mod tests {
     #[test]
     fn commands_bump_timeout() {
         let mut live = Liveness::new(Inner::default());
-        live.prepare(Ballot(2, 3));
+        live.receive(Command::Prepare(Ballot(2, 3)));
         assert!(live.leader_election.latest_message.is_some());
         assert_eq!(live.inner.commands[0], Command::Prepare(Ballot(2, 3)));
 
         let mut live = Liveness::new(Inner::default());
-        live.promise(0, Ballot(2, 3), vec![]);
+        live.receive(Command::Promise(0, Ballot(2, 3), vec![]));
         assert!(live.leader_election.latest_message.is_some());
         assert_eq!(live.inner.commands[0], Command::Promise(0, Ballot(2, 3), vec![]));
 
         let mut live = Liveness::new(Inner::default());
-        live.reject(4, Ballot(0, 1), Ballot(4, 5));
+        live.receive(Command::Reject(4, Ballot(0, 1), Ballot(4, 5)));
         assert!(live.leader_election.latest_message.is_some());
         assert_eq!(live.inner.commands[0], Command::Reject(4, Ballot(0, 1), Ballot(4, 5)));
 
         let mut live = Liveness::new(Inner::default());
-        live.accept(Ballot(4, 5), vec![]);
+        live.receive(Command::Accept(Ballot(4, 5), vec![]));
         assert!(live.leader_election.latest_message.is_some());
         assert_eq!(live.inner.commands[0], Command::Accept(Ballot(4, 5), vec![]));
 
         let mut live = Liveness::new(Inner::default());
-        live.accepted(5, Ballot(1, 2), vec![2, 3, 4]);
+        live.receive(Command::Accepted(5, Ballot(1, 2), vec![2, 3, 4]));
         assert!(live.leader_election.latest_message.is_some());
         assert_eq!(live.inner.commands[0], Command::Accepted(5, Ballot(1, 2), vec![2, 3, 4]));
 
         let mut live = Liveness::new(Inner::default());
-        live.resolution(Ballot(1, 2), vec![]);
+        live.receive(Command::Resolution(Ballot(1, 2), vec![]));
         assert!(live.leader_election.latest_message.is_some());
         assert_eq!(live.inner.commands[0], Command::Resolution(Ballot(1, 2), vec![]));
     }
@@ -188,7 +163,7 @@ mod tests {
         assert!(!live.inner.proposed_leadership);
 
         // receive a message
-        live.accepted(5, Ballot(1, 2), vec![2, 3, 4]);
+        live.receive(Command::Accepted(5, Ballot(1, 2), vec![2, 3, 4]));
         live.tick();
         assert!(!live.inner.proposed_leadership);
 
@@ -208,7 +183,7 @@ mod tests {
         assert!(!live.inner.proposed_leadership);
 
         // receive a message
-        live.resolution(Ballot(0, 1), vec![]);
+        live.receive(Command::Resolution(Ballot(0, 1), vec![]));
         live.tick();
         assert!(!live.inner.proposed_leadership);
 
@@ -226,12 +201,9 @@ mod tests {
         proposed_leadership: bool,
     }
 
-    impl Extend<Command> for Inner {
-        fn extend<T>(&mut self, iter: T)
-        where
-            T: IntoIterator<Item = Command>,
-        {
-            self.commands.extend(iter);
+    impl Receiver for Inner {
+        fn receive(&mut self, cmd: Command) {
+            self.commands.push(cmd);
         }
     }
 
