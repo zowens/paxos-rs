@@ -1,0 +1,18 @@
+version: 2
+updates:
+- package-ecosystem: cargo
+  directory: "/"
+  schedule:
+    interval: daily
+    time: "13:00"
+  open-pull-requests-limit: 10
+  reviewers:
+  - zowens
+  ignore:
+  - dependency-name: hyper
+    versions:
+    - 0.14.5
+    - 0.14.6
+  - dependency-name: tokio
+    versions:
+    - 1.4.0
